@@ -3,8 +3,8 @@
 import { useState } from 'react'
 import { PromptModal } from '../components/PromptModal'
 import { VoiceAgentStyled } from '../components/VoiceAgentStyled'
-import { Button } from '@kit/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@kit/ui/card'
+import { Button } from '../components/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Settings, MessageSquare } from 'lucide-react'
 
 export default function Page() {

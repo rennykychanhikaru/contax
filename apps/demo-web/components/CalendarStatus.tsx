@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Card, CardHeader, CardContent } from '@kit/ui/card'
-import { Button } from '@kit/ui/button'
+import { Card, CardHeader, CardContent } from './ui/card'
+import { Button } from './ui/button'
 
 type GCalStatus = {
   connected: boolean
@@ -37,20 +37,21 @@ export function CalendarStatus() {
   const color = connected ? '#0a7' : '#c33'
 
   return (
-    <Card>
+    <Card className={connected ? 'bg-green-900/50 border-green-700' : ''}>
       <CardHeader>
-        <div className="mk-row">
-          <div style={{ width: 10, height: 10, borderRadius: 6, background: color }} />
-          <div>
-            <strong>Google Calendar:</strong>{' '}
-            {status ? (connected ? 'Connected' : status.hasToken ? 'Token present, but connection failed' : 'Token missing') : 'Checking…'}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ width: 10, height: 10, borderRadius: 6, background: color }} />
+            <div>
+              <strong>Google Calendar:</strong>{' '}
+              {status ? (connected ? 'Connected' : status.hasToken ? 'Token present, but connection failed' : 'Token missing') : 'Checking…'}
+            </div>
           </div>
-          <div style={{ marginLeft: 'auto' }}>
-            <Button onClick={() => (window.location.href = '/api/google/oauth/start')}>Connect Google</Button>
-          </div>
+          <Button onClick={() => (window.location.href = '/api/google/oauth/start')}>Connect Google Calendar</Button>
         </div>
       </CardHeader>
       <CardContent>
+        {/* Hidden: Scopes and Calendars
         {status?.scopes && (
           <div className="mk-label">Scopes: <code>{status.scopes.join(' ')}</code></div>
         )}
@@ -58,6 +59,7 @@ export function CalendarStatus() {
           <div className="mk-label">Calendars: {status.calendars.map((c) => `${c.summary}${c.primary ? ' (primary)' : ''}`).join(', ')}
           </div>
         )}
+        */}
         {status?.errors && status.errors.length > 0 && (
           <div style={{ color: '#a00' }}>Errors: {status.errors.map((e) => `${e.step}: ${e.message}`).join(' | ')}</div>
         )}

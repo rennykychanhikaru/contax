@@ -4,18 +4,18 @@ import { useEffect, useRef, useState } from 'react'
 import { OpenAIRealtimeAgent } from '../lib/agent/openai-realtime'
 import { CalendarStatus } from './CalendarStatus'
 
-// Import UI components from Makerkit
-import { Button } from '@kit/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@kit/ui/card'
-import { Checkbox } from '@kit/ui/checkbox'
-import { Label } from '@kit/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@kit/ui/select'
-import { Badge } from '@kit/ui/badge'
-import { Alert, AlertDescription } from '@kit/ui/alert'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@kit/ui/collapsible'
-import { Separator } from '@kit/ui/separator'
+// Import UI components from local
+import { Button } from './ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
+import { Checkbox } from './ui/checkbox'
+import { Label } from './ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+import { Badge } from './ui/badge'
+import { Alert, AlertDescription } from './ui/alert'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
+import { Separator } from './ui/separator'
 import { ChevronDown, Mic, MicOff, Phone, PhoneOff, Eye, EyeOff, Calendar, Clock, Bug, TestTube2 } from 'lucide-react'
-import { cn } from '@kit/ui/utils'
+import { cn } from '../lib/utils'
 
 type GCalendar = {
   id: string
@@ -184,7 +184,7 @@ export function VoiceAgentStyled({
   }
 
   return (
-    <div className="container max-w-4xl mx-auto p-4 space-y-4">
+    <div className="space-y-4">
       {/* Header Card */}
       <Card>
         <CardHeader>
@@ -291,9 +291,9 @@ export function VoiceAgentStyled({
           {/* Action Buttons */}
           <div className="flex gap-2 flex-wrap">
             {!connected ? (
-              <Button onClick={start} className="flex items-center gap-2">
+              <Button onClick={start} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white">
                 <Mic className="h-4 w-4" />
-                Start Voice Session
+                Call Renny's Office
               </Button>
             ) : (
               <Button onClick={stop} variant="destructive" className="flex items-center gap-2">
@@ -302,6 +302,7 @@ export function VoiceAgentStyled({
               </Button>
             )}
 
+            {/* Transcript button hidden
             <Button
               variant="outline"
               onClick={() => setShowUserTranscript(!showUserTranscript)}
@@ -310,6 +311,7 @@ export function VoiceAgentStyled({
               {showUserTranscript ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               {showUserTranscript ? 'Hide' : 'Show'} Transcript
             </Button>
+            */}
 
             <Button
               variant="outline"
@@ -329,6 +331,7 @@ export function VoiceAgentStyled({
               {debugOpen ? 'Hide' : 'Show'} Debug
             </Button>
 
+            {/* Test Availability button hidden
             <Button
               variant="outline"
               onClick={async () => {
@@ -352,6 +355,7 @@ export function VoiceAgentStyled({
               <TestTube2 className="h-4 w-4" />
               Test Availability
             </Button>
+            */}
           </div>
 
           {/* Status Badge */}
