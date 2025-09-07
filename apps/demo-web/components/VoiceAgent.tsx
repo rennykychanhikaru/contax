@@ -29,6 +29,7 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
   const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: any }>>([])
   const [testResult, setTestResult] = useState<any>(null)
   const [agentSays, setAgentSays] = useState<string[]>([])
+  const [actualAgentTranscript, setActualAgentTranscript] = useState<string[]>([])
   const [availableSlots, setAvailableSlots] = useState<Array<{ start: string; end: string }>>([])
   const [slotsTz, setSlotsTz] = useState<string | null>(null)
   const [showUserTranscript, setShowUserTranscript] = useState<boolean>(false)
@@ -37,6 +38,12 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
   useEffect(() => {
     agentRef.current = new OpenAIRealtimeAgent({
       onTranscript: (text) => setTranscript((prev) => [...prev, text]),
+      onAgentTranscript: (text, final) => {
+        if (final) {
+          // When we get a final transcript, add it to the list
+          setActualAgentTranscript((prev) => [...prev, text])
+        }
+      },
       onToolEvent: (e) => {
         setToolEvents((prev) => [...prev.slice(-19), { t: Date.now(), data: e }])
         if (e.kind === 'event' && e.type === 'spoken' && (e as any).text) {
@@ -245,14 +252,30 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
       {showAgentTranscript && (
         <div className="mk-card" style={{ marginTop: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Agent Transcript</div>
-          {agentSays.length === 0 ? (
+          {actualAgentTranscript.length === 0 && agentSays.length === 0 ? (
             <div className="mk-label">No agent speech yet.</div>
           ) : (
-            <ul>
-              {agentSays.map((t, i) => (
-                <li key={i}>{t}</li>
-              ))}
-            </ul>
+            <>
+              {actualAgentTranscript.length > 0 && (
+                <ul>
+                  {actualAgentTranscript.map((t, i) => (
+                    <li key={i}>{t}</li>
+                  ))}
+                </ul>
+              )}
+              {agentSays.length > 0 && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: 'pointer', color: '#666' }}>
+                    Intended responses ({agentSays.length})
+                  </summary>
+                  <ul style={{ marginTop: 4, opacity: 0.7 }}>
+                    {agentSays.map((t, i) => (
+                      <li key={i}>{t}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </>
           )}
         </div>
       )}

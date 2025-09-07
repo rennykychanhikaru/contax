@@ -10,6 +10,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private mic: MediaStream | null = null
   private audioEl: HTMLAudioElement
   private onTranscript?: (text: string) => void
+  private onAgentTranscript?: (text: string, final: boolean) => void
+  private currentAgentTranscript: string = ''
   private toolArgsBuffers = new Map<string, { name: string; args: string }>()
   private dataChannel: RTCDataChannel | null = null
   private pendingMessages: any[] = []
@@ -27,11 +29,13 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
   constructor(opts?: {
     onTranscript?: (text: string) => void
+    onAgentTranscript?: (text: string, final: boolean) => void
     onToolEvent?: (e: ToolEvent) => void
     onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
   }) {
     this.audioEl = new Audio()
     this.onTranscript = opts?.onTranscript
+    this.onAgentTranscript = opts?.onAgentTranscript
     this.onToolEvent = opts?.onToolEvent
     this.onSlots = opts?.onSlots
   }
@@ -102,8 +106,56 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   }
 
   private speak(text: string) {
+    // Try to cancel any ongoing response first
+    try { this.sendOAI({ type: 'response.cancel' }) } catch {}
+    
+    // Report what we're trying to say
     this.onToolEvent?.({ kind: 'event', type: 'spoken', text })
-    this.sendOAI({ type: 'response.create', response: { instructions: text, modalities: ['audio', 'text'] } })
+    
+    // Tell OpenAI to speak EXACTLY this text
+    const exactInstructions = `Say exactly this and nothing else: "${text.replace(/"/g, '\\"')}"`
+    this.sendOAI({ 
+      type: 'response.create', 
+      response: { 
+        instructions: exactInstructions,
+        modalities: ['audio', 'text'] 
+      } 
+    })
+  }
+
+  private parseSlotFromTranscript(transcript: string, tz?: string): { start: string; end: string } | null {
+    // Simple time parser for fallback - tries to extract a time from the transcript
+    const timeMatch = transcript.match(/\b(\d{1,2})(?::(\d{2}))?\s?(am|pm|AM|PM)?\b/i)
+    if (!timeMatch) return null
+    
+    try {
+      const hours = parseInt(timeMatch[1])
+      const minutes = parseInt(timeMatch[2] || '0')
+      const isPM = /pm/i.test(timeMatch[3] || '')
+      
+      let hour24 = hours
+      if (isPM && hours !== 12) hour24 += 12
+      if (!isPM && hours === 12) hour24 = 0
+      
+      const now = new Date()
+      const slotDate = new Date(now)
+      slotDate.setHours(hour24, minutes, 0, 0)
+      
+      // If time is in the past, assume tomorrow
+      if (slotDate < now) {
+        slotDate.setDate(slotDate.getDate() + 1)
+      }
+      
+      const endDate = new Date(slotDate)
+      endDate.setHours(endDate.getHours() + 1)
+      
+      return {
+        start: slotDate.toISOString(),
+        end: endDate.toISOString()
+      }
+    } catch {
+      return null
+    }
   }
 
   private fmtTime(iso: string, tz?: string) {
@@ -229,6 +281,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       }
       // Simple transcript tap if present
       if (msg.type === 'transcript') {
+        this.lastTranscript = msg.text
         if (this.onTranscript) this.onTranscript(msg.text)
         // After first user transcript, arm tool usage with explicit guidance (once)
         if (!this.toolHintSent) {
@@ -245,6 +298,41 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         const dayQuery = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this\s+week|availability|free|open)\b/.test(t)
         if (dayQuery && !hasTime) this.requireTool('slots')
         if (hasTime) this.requireTool('check')
+      }
+
+      // Handle agent (assistant) transcript events
+      if (msg.type === 'response.started') {
+        // Clear transcript when a new response starts
+        this.currentAgentTranscript = ''
+      }
+      if (msg.type === 'response.audio_transcript.delta') {
+        const delta = (msg.delta as string) || ''
+        this.currentAgentTranscript += delta
+        if (this.onAgentTranscript) {
+          this.onAgentTranscript(this.currentAgentTranscript, false)
+        }
+      }
+      if (msg.type === 'response.audio_transcript.done') {
+        const final = (msg.transcript as string) || this.currentAgentTranscript
+        this.currentAgentTranscript = ''
+        if (this.onAgentTranscript) {
+          this.onAgentTranscript(final, true)
+        }
+      }
+      // Also handle text output events (when audio is disabled)
+      if (msg.type === 'response.text.delta') {
+        const delta = (msg.delta as string) || ''
+        this.currentAgentTranscript += delta
+        if (this.onAgentTranscript) {
+          this.onAgentTranscript(this.currentAgentTranscript, false)
+        }
+      }
+      if (msg.type === 'response.text.done') {
+        const final = (msg.text as string) || this.currentAgentTranscript
+        this.currentAgentTranscript = ''
+        if (this.onAgentTranscript) {
+          this.onAgentTranscript(final, true)
+        }
       }
 
       // Tool calling (function calling) handlers – support current and legacy event names
@@ -347,17 +435,28 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           }
         })()
         this.onToolEvent?.({ kind: 'result', name: effective, result: res })
-        await this.sendToolResult(callId, res)
+        
+        // Process the result and prepare our response BEFORE sending tool result
+        let spokenResponse = ''
         try {
           if ((res as any)?.error === 'broad_window') {
+            // Don't speak, just trigger slots tool
+            await this.sendToolResult(callId, res)
             this.requireTool('slots')
+            return
           } else if ((res as any)?.available === true) {
             const tz = (res as any)?.timeZone
             const s = (res as any)?.start || args.start
             const e = (res as any)?.end || args.end
-            this.speak(`That time is available: ${this.fmtRange(s, e, tz)}. Should I book it?`)
+            spokenResponse = `Yes, ${this.fmtRange(s, e, tz)} is available. Would you like me to book it?`
           } else if ((res as any)?.available === false) {
-            const date = ((res as any)?.start || (args.start as string)).slice(0, 10)
+            const tz = (res as any)?.timeZone
+            const requestedStart = (res as any)?.start || args.start
+            const requestedEnd = (res as any)?.end || args.end
+            const requestedTime = this.fmtRange(requestedStart, requestedEnd, tz)
+            
+            // Get alternative slots for the same day
+            const date = (requestedStart as string).slice(0, 10)
             const r2 = await fetch('/api/calendar/slots', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -369,12 +468,18 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
               const tz2 = j.timeZone
               try { this.onSlots?.(j.slots, tz2) } catch {}
               const list = j.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, tz2)).join(', ')
-              this.speak(`That time is not available. Here are some options: ${list}.`)
+              spokenResponse = `Sorry, ${requestedTime} is not available. The available times that day are: ${list}.`
             } else {
-              this.speak('That time is not available and I could not retrieve alternative slots.')
+              spokenResponse = `Sorry, ${requestedTime} is not available and I could not retrieve alternative slots for that day.`
             }
           }
         } catch {}
+        
+        // Send tool result with suppression flag, then speak our response
+        await this.sendToolResult(callId, res, true)
+        if (spokenResponse) {
+          this.speak(spokenResponse)
+        }
       } else if (effective === 'bookAppointment') {
         const organizationId = args.organizationId || this.defaultOrgId
         const calendarId = args.calendarId || this.defaultCalendarId
@@ -397,17 +502,24 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           }
         })()
         this.onToolEvent?.({ kind: 'result', name: effective, result: res })
-        await this.sendToolResult(callId, res)
+        
+        // Prepare response before sending tool result
+        let spokenResponse = ''
         try {
           if (res?.error === 'conflict') {
-            this.speak('That time is busy. Would you like me to suggest alternatives?')
+            spokenResponse = 'That time is busy. Would you like me to suggest alternatives?'
           } else if (res?.appointment) {
             const tz = res?.timeZone
             const s = res?.start || args.start
             const e = res?.end || args.end
-            this.speak(`Booked: ${this.fmtRange(s, e, tz)}. I have added it to the calendar.`)
+            spokenResponse = `Perfect! I've booked ${this.fmtRange(s, e, tz)} for you. It's now on your calendar.`
           }
         } catch {}
+        
+        await this.sendToolResult(callId, res, true)
+        if (spokenResponse) {
+          this.speak(spokenResponse)
+        }
       } else if (effective === 'getAvailableSlots') {
         const organizationId = args.organizationId || this.defaultOrgId
         const res = await (async () => {
@@ -431,20 +543,28 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           }
         })()
         this.onToolEvent?.({ kind: 'result', name: effective, result: res })
-        await this.sendToolResult(callId, res)
+        
+        // Prepare response before sending tool result
+        let spokenResponse = ''
         try {
           if (Array.isArray(res?.slots)) {
             const tz = res?.timeZone
             try { this.onSlots?.(res.slots, tz) } catch {}
-            if (res.slots.length === 0) this.speak('No free slots found that day.')
-            else {
+            if (res.slots.length === 0) {
+              spokenResponse = 'No free slots found that day.'
+            } else {
               const list = res.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, tz)).join(', ')
-              this.speak(`Available slots are: ${list}.`)
+              spokenResponse = `Available times are: ${list}.`
             }
           } else if (res?.error) {
-            this.speak('I could not retrieve the day availability at the moment.')
+            spokenResponse = 'I could not retrieve the day availability at the moment.'
           }
         } catch {}
+        
+        await this.sendToolResult(callId, res, true)
+        if (spokenResponse) {
+          this.speak(spokenResponse)
+        }
       } else {
         const err = { error: `Unknown tool ${name || 'unknown'}` }
         this.onToolEvent?.({ kind: 'result', name, result: err })
@@ -457,8 +577,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     }
   }
 
-  private async sendToolResult(callId: string, result: any) {
-    // Provide tool output to the model and request it to continue
+  private async sendToolResult(callId: string, result: any, suppressResponse: boolean = false) {
+    // Provide tool output to the model
     const createItem = {
       type: 'conversation.item.create',
       item: {
@@ -467,8 +587,21 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         output: JSON.stringify(result)
       }
     }
-    // Do NOT auto-trigger a model response; we will speak deterministic text from tool results.
     this.sendOAI(createItem)
+    
+    // If we're going to speak deterministically, tell the AI to be quiet
+    if (suppressResponse) {
+      // Add a system message to prevent AI from speaking
+      const suppressMsg = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [{ type: 'text', text: 'Tool result has been processed. Agent will speak the response.' }]
+        }
+      }
+      this.sendOAI(suppressMsg)
+    }
   }
 
   private attachDataChannel(channel: RTCDataChannel) {
