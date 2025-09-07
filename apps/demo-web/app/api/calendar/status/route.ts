@@ -15,7 +15,7 @@ type Status = {
 }
 
 export async function GET(req: NextRequest) {
-  const c = cookies()
+  const c = await cookies()
   let token = c.get('gcal_access')?.value || c.get('gcal_token')?.value || process.env.GOOGLE_CALENDAR_ACCESS_TOKEN
   const refresh = c.get('gcal_refresh')?.value
   const expiry = Number(c.get('gcal_expiry')?.value || 0)

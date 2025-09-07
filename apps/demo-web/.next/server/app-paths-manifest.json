@@ -1,7 +1,3 @@
 {
-  "/api/realtime/token/route": "app/api/realtime/token/route.js",
-  "/api/appointments/book/route": "app/api/appointments/book/route.js",
-  "/api/calendar/check-availability/route": "app/api/calendar/check-availability/route.js",
-  "/api/calendar/slots/route": "app/api/calendar/slots/route.js",
   "/page": "app/page.js"
 }

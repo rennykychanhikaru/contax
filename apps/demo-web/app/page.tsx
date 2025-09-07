@@ -2,7 +2,10 @@
 
 import { useState } from 'react'
 import { PromptModal } from '../components/PromptModal'
-import { VoiceAgent } from '../components/VoiceAgent'
+import { VoiceAgentStyled } from '../components/VoiceAgentStyled'
+import { Button } from '@kit/ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@kit/ui/card'
+import { Settings, MessageSquare } from 'lucide-react'
 
 export default function Page() {
   const [open, setOpen] = useState(false)
@@ -13,17 +16,29 @@ export default function Page() {
   const [greeting, setGreeting] = useState('Hi! Thanks for calling. Unfortunately, our offices are now closed. I\'m Greg, the AI receptionist. I\'d be happy to schedule a meeting between you and Renny when he\'s back in the office. What date and time works best for you?')
 
   return (
-    <main style={{ padding: 24 }}>
-      <h1 style={{ marginBottom: 8 }}>Contax – Voice Scheduling Demo</h1>
+    <main className="container max-w-6xl mx-auto p-6">
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle className="text-3xl">Contax – Voice Scheduling Demo</CardTitle>
+          <CardDescription>
+            AI-powered voice assistant for seamless calendar management and appointment scheduling
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-3">
+            <Button onClick={() => setOpen(true)} variant="outline" className="flex items-center gap-2">
+              <Settings className="h-4 w-4" />
+              Edit Agent Prompt
+            </Button>
+            <Button onClick={() => setOpenGreeting(true)} variant="outline" className="flex items-center gap-2">
+              <MessageSquare className="h-4 w-4" />
+              Edit Greeting
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
-      <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
-        <button onClick={() => setOpen(true)}>Edit Agent Prompt</button>
-        <button onClick={() => setOpenGreeting(true)}>Edit Greeting</button>
-      </div>
-
-      <section style={{ marginTop: 24 }}>
-        <VoiceAgent systemPrompt={systemPrompt} greeting={greeting} language="en-US" />
-      </section>
+      <VoiceAgentStyled systemPrompt={systemPrompt} greeting={greeting} language="en-US" />
 
       <PromptModal
         open={open}

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 
 export async function GET(_req: NextRequest) {
-  const c = cookies()
+  const c = await cookies()
   const token = c.get('gcal_access')?.value || c.get('gcal_token')?.value || process.env.GOOGLE_CALENDAR_ACCESS_TOKEN
   if (!token) return NextResponse.json({ error: 'no_token' }, { status: 401 })
 

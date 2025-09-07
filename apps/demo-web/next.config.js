@@ -1,8 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  experimental: { serverActions: false },
-  transpilePackages: ['@kit/ui']
+  transpilePackages: ['@kit/ui'],
+  experimental: {
+    // Enable CSS @import from node_modules
+    optimizePackageImports: ['@kit/ui'],
+  },
 }
 
 module.exports = nextConfig

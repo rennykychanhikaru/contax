@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Card, CardHeader, CardBody, Button } from '@kit/ui'
+import { Card, CardHeader, CardContent } from '@kit/ui/card'
+import { Button } from '@kit/ui/button'
 
 type GCalStatus = {
   connected: boolean
@@ -49,7 +50,7 @@ export function CalendarStatus() {
           </div>
         </div>
       </CardHeader>
-      <CardBody>
+      <CardContent>
         {status?.scopes && (
           <div className="mk-label">Scopes: <code>{status.scopes.join(' ')}</code></div>
         )}
@@ -60,7 +61,7 @@ export function CalendarStatus() {
         {status?.errors && status.errors.length > 0 && (
           <div style={{ color: '#a00' }}>Errors: {status.errors.map((e) => `${e.step}: ${e.message}`).join(' | ')}</div>
         )}
-      </CardBody>
+      </CardContent>
     </Card>
   )
 }

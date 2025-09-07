@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Dialog, DialogActions, Button, Textarea } from '@kit/ui'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@kit/ui/dialog'
+import { Button } from '@kit/ui/button'
+import { Textarea } from '@kit/ui/textarea'
 
 export function PromptModal({
   open,
@@ -20,14 +22,25 @@ export function PromptModal({
   useEffect(() => setValue(initialValue), [initialValue])
 
   return (
-    <Dialog open={open} onOpenChange={(v) => (v ? null : onClose())} title={title}>
-      <Textarea style={{ minHeight: 160, fontFamily: 'monospace' }} value={value} onChange={(e) => setValue(e.target.value)} />
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="primary" onClick={() => onSave(value)}>
-          Save
-        </Button>
-      </DialogActions>
+    <Dialog open={open} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="py-4">
+          <Textarea 
+            className="min-h-[160px] font-mono" 
+            value={value} 
+            onChange={(e) => setValue(e.target.value)} 
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={() => onSave(value)}>
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
     </Dialog>
   )
 }

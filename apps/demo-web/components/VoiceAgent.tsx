@@ -4,6 +4,17 @@ import { useEffect, useRef, useState } from 'react'
 import { OpenAIRealtimeAgent } from '../lib/agent/openai-realtime'
 import { CalendarStatus } from './CalendarStatus'
 
+// Import UI components
+import { Button } from './ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
+import { Checkbox } from './ui/checkbox'
+import { Label } from './ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
+import { Badge } from './ui/badge'
+import { Alert, AlertDescription } from './ui/alert'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
+import { ChevronDown, Mic, MicOff, Phone, PhoneOff, Eye, EyeOff, Calendar, TestTube } from 'lucide-react'
+
 type GCalStatus = {
   connected: boolean
   hasToken: boolean
@@ -143,160 +154,254 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
   }, [calendarId])
 
   return (
-    <div className="mk-card">
+    <div className="space-y-6">
       <OrgBar org={org} setOrg={setOrg} calendarId={calendarId} />
       {calendarTz && (
-        <div style={{ marginBottom: 8, color: '#555' }}>
+        <div className="text-sm text-muted-foreground">
           <strong>Active Timezone:</strong> {calendarTz}
         </div>
       )}
       <CalendarStatus />
       {calendars.length > 0 && (
-        <div className="mk-card" style={{ marginTop: 8 }}>
-          <div style={{ marginBottom: 6 }}><strong>Calendars to consider (availability):</strong></div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {calendars.map((c) => (
-              <label key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={selectedCalIds.includes(c.id)}
-                  onChange={(e) => {
-                    setSelectedCalIds((prev) => {
-                      const next = e.target.checked ? Array.from(new Set([...prev, c.id])) : prev.filter((x) => x !== c.id)
-                      agentRef.current?.setCalendarIds(next)
-                      return next
-                    })
-                  }}
-                />
-                {c.summary} {c.primary ? '(primary)' : ''}
-              </label>
-            ))}
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <input type="checkbox" checked={useUnion} onChange={(e) => setUseUnion(e.target.checked)} />
-              Use selected calendars for availability
-            </label>
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <strong>Book on:</strong>{' '}
-            <select
-              value={calendarId}
-              onChange={(e) => {
-                const id = e.target.value
-                setCalendarId(id)
-                const found = calendars.find((c) => c.id === id)
-                if (found?.timeZone) setCalendarTz(found.timeZone)
-              }}
-            >
-              {calendars.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.summary}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Calendar Configuration</CardTitle>
+            <CardDescription>Select calendars and settings for the voice agent</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label className="text-sm font-medium">Calendars to consider (availability):</Label>
+              <div className="mt-2 flex flex-wrap gap-3">
+                {calendars.map((c) => (
+                  <div key={c.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`calendar-${c.id}`}
+                      checked={selectedCalIds.includes(c.id)}
+                      onCheckedChange={(checked) => {
+                        setSelectedCalIds((prev) => {
+                          const next = checked ? Array.from(new Set([...prev, c.id])) : prev.filter((x) => x !== c.id)
+                          agentRef.current?.setCalendarIds(next)
+                          return next
+                        })
+                      }}
+                    />
+                    <Label htmlFor={`calendar-${c.id}`} className="text-sm">
+                      {c.summary} {c.primary ? <Badge variant="secondary" className="ml-1 text-xs">primary</Badge> : ''}
+                    </Label>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="use-union"
+                checked={useUnion}
+                onCheckedChange={(checked) => setUseUnion(!!checked)}
+              />
+              <Label htmlFor="use-union" className="text-sm">Use selected calendars for availability</Label>
+            </div>
+            <div>
+              <Label className="text-sm font-medium">Book appointments on:</Label>
+              <Select
+                value={calendarId}
+                onValueChange={(value) => {
+                  setCalendarId(value)
+                  const found = calendars.find((c) => c.id === value)
+                  if (found?.timeZone) setCalendarTz(found.timeZone)
+                }}
+              >
+                <SelectTrigger className="mt-1">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {calendars.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      {c.summary}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
       )}
-      <div className="mk-row" style={{ marginTop: 8 }}>
-        {!connected ? (
-          <button className="mk-btn primary" onClick={start}>Start Voice Session</button>
-        ) : (
-          <button className="mk-btn" onClick={stop}>Hang Up</button>
-        )}
-        <button className="mk-btn" onClick={() => setDebugOpen((v) => !v)}>{debugOpen ? 'Hide Debug' : 'Show Debug'}</button>
-        <button className="mk-btn" onClick={() => setShowUserTranscript((v) => !v)}>{showUserTranscript ? 'Hide Transcript' : 'Show Transcript'}</button>
-        <button className="mk-btn" onClick={() => setShowAgentTranscript((v) => !v)}>{showAgentTranscript ? 'Hide Agent Transcript' : 'Show Agent Transcript'}</button>
-        <button className="mk-btn"
-          onClick={async () => {
-            if (!org) return alert('No organization loaded')
-            const now = new Date()
-            const startIso = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0)
-              .toISOString()
-            const endIso = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 2, 0, 0)
-              .toISOString()
-            const res = await fetch('/api/calendar/check-availability', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ organizationId: org.id, start: startIso, end: endIso, calendarId })
-            }).then((r) => r.json())
-            setTestResult(res)
-          }}
-        >
-          Test Availability (next hour)
-        </button>
-      </div>
-      <div style={{ marginTop: 12, color: '#333' }}>
-        <strong>Status:</strong> {connected ? 'Connected' : 'Idle'}
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Phone className="h-5 w-5" />
+            Voice Agent Control
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {!connected ? (
+              <Button onClick={start} className="flex items-center gap-2">
+                <Mic className="h-4 w-4" />
+                Start Voice Session
+              </Button>
+            ) : (
+              <Button variant="destructive" onClick={stop} className="flex items-center gap-2">
+                <PhoneOff className="h-4 w-4" />
+                Hang Up
+              </Button>
+            )}
+            <Button variant="outline" onClick={() => setDebugOpen((v) => !v)}>
+              {debugOpen ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
+              {debugOpen ? 'Hide Debug' : 'Show Debug'}
+            </Button>
+            <Button variant="outline" onClick={() => setShowUserTranscript((v) => !v)}>
+              {showUserTranscript ? 'Hide Transcript' : 'Show Transcript'}
+            </Button>
+            <Button variant="outline" onClick={() => setShowAgentTranscript((v) => !v)}>
+              {showAgentTranscript ? 'Hide Agent Transcript' : 'Show Agent Transcript'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!org) return alert('No organization loaded')
+                const now = new Date()
+                const startIso = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0)
+                  .toISOString()
+                const endIso = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 2, 0, 0)
+                  .toISOString()
+                const res = await fetch('/api/calendar/check-availability', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ organizationId: org.id, start: startIso, end: endIso, calendarId })
+                }).then((r) => r.json())
+                setTestResult(res)
+              }}
+              className="flex items-center gap-2"
+            >
+              <TestTube className="h-4 w-4" />
+              Test Availability (next hour)
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-gray-400'}`} />
+            <span className="text-sm text-muted-foreground">
+              <strong>Status:</strong> {connected ? 'Connected' : 'Idle'}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
       {showUserTranscript && (
-        <div className="mk-card" style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Transcript (user speech)</div>
-          <ul>
-            {transcript.map((t, i) => (
-              <li key={i}>{t}</li>
-            ))}
-          </ul>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">User Transcript</CardTitle>
+            <CardDescription>Your speech recognized by the system</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {transcript.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No speech detected yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {transcript.map((t, i) => (
+                  <li key={i} className="text-sm bg-muted p-2 rounded">{t}</li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
       )}
       {availableSlots.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <strong>Availability on {fmtDateLocal(availableSlots[0].start, slotsTz || calendarTz || undefined)} ({slotsTz || calendarTz || 'local'}):</strong>
-          <ul>
-            {availableSlots.map((s, i) => (
-              <li key={i}>{fmtRangeLocal(s.start, s.end, slotsTz || calendarTz || undefined)}</li>
-            ))}
-          </ul>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="h-5 w-5" />
+              Available Slots
+            </CardTitle>
+            <CardDescription>
+              Availability on {fmtDateLocal(availableSlots[0].start, slotsTz || calendarTz || undefined)} ({slotsTz || calendarTz || 'local'})
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-2">
+              {availableSlots.map((s, i) => (
+                <li key={i} className="flex items-center gap-2">
+                  <Badge variant="outline" className="font-mono">
+                    {fmtRangeLocal(s.start, s.end, slotsTz || calendarTz || undefined)}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
       )}
       {showAgentTranscript && (
-        <div className="mk-card" style={{ marginTop: 12 }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Agent Transcript</div>
-          {actualAgentTranscript.length === 0 && agentSays.length === 0 ? (
-            <div className="mk-label">No agent speech yet.</div>
-          ) : (
-            <>
-              {actualAgentTranscript.length > 0 && (
-                <ul>
-                  {actualAgentTranscript.map((t, i) => (
-                    <li key={i}>{t}</li>
-                  ))}
-                </ul>
-              )}
-              {agentSays.length > 0 && (
-                <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: 'pointer', color: '#666' }}>
-                    Intended responses ({agentSays.length})
-                  </summary>
-                  <ul style={{ marginTop: 4, opacity: 0.7 }}>
-                    {agentSays.map((t, i) => (
-                      <li key={i}>{t}</li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </>
-          )}
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Agent Transcript</CardTitle>
+            <CardDescription>What the AI agent is saying</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {actualAgentTranscript.length === 0 && agentSays.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No agent speech yet.</p>
+            ) : (
+              <>
+                {actualAgentTranscript.length > 0 && (
+                  <div>
+                    <h4 className="font-medium text-sm mb-2">Actual Speech</h4>
+                    <ul className="space-y-2">
+                      {actualAgentTranscript.map((t, i) => (
+                        <li key={i} className="text-sm bg-blue-50 p-2 rounded dark:bg-blue-900/20">{t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {agentSays.length > 0 && (
+                  <Collapsible>
+                    <CollapsibleTrigger className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground">
+                      <ChevronDown className="h-4 w-4" />
+                      Intended responses ({agentSays.length})
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="mt-2">
+                      <ul className="space-y-2 opacity-70">
+                        {agentSays.map((t, i) => (
+                          <li key={i} className="text-sm bg-muted p-2 rounded">{t}</li>
+                        ))}
+                      </ul>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
       )}
       {debugOpen && (
-        <div style={{ marginTop: 12, background: '#111', color: '#0f0', padding: 10, borderRadius: 6 }}>
-          <div style={{ marginBottom: 8 }}>
-            <strong>Tool Debug</strong> (last {toolEvents.length} events)
-          </div>
-          <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(toolEvents, null, 2)}</pre>
-          {testResult && (
-            <div style={{ marginTop: 8 }}>
-              <strong>Test Availability Result</strong>
-              <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(testResult, null, 2)}</pre>
-              {Array.isArray(testResult?.usedGoogleCalendars) && (
-                <div style={{ marginTop: 6 }}>
-                  <strong>Calendars considered:</strong> {testResult.usedGoogleCalendars.join(', ')}
-                </div>
-              )}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-green-600 dark:text-green-400">
+              <TestTube className="h-5 w-5" />
+              Debug Console
+            </CardTitle>
+            <CardDescription>
+              Last {toolEvents.length} tool events and system information
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="bg-black text-green-400 p-4 rounded font-mono text-xs overflow-x-auto">
+              <pre className="whitespace-pre-wrap">{JSON.stringify(toolEvents, null, 2)}</pre>
             </div>
-          )}
-        </div>
+            {testResult && (
+              <div className="mt-4">
+                <h4 className="font-medium text-sm mb-2">Test Availability Result</h4>
+                <div className="bg-muted p-3 rounded">
+                  <pre className="text-xs whitespace-pre-wrap overflow-x-auto">{JSON.stringify(testResult, null, 2)}</pre>
+                  {Array.isArray(testResult?.usedGoogleCalendars) && (
+                    <div className="mt-2 pt-2 border-t">
+                      <strong className="text-sm">Calendars considered:</strong>{' '}
+                      <span className="text-sm text-muted-foreground">
+                        {testResult.usedGoogleCalendars.join(', ')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
     </div>
   )
@@ -319,43 +424,65 @@ function OrgBar({
   }, [org])
 
   return (
-    <div style={{ marginBottom: 8, color: '#333' }}>
-      <div>
-        <strong>Organization:</strong>{' '}
-        {org ? (
-          `${org.name} (${org.id})`
-        ) : (
-          <span>
-            Loading…{' '}
-            <span style={{ color: '#999' }}>(if this persists, paste an Organization ID)</span>
-          </span>
-        )}
-      </div>
-      <div>
-        <strong>Calendar:</strong> <code>{calendarId}</code>
-      </div>
-      {!org && (
-        <div style={{ marginTop: 8 }}>
-          <input
-            placeholder="Paste Organization ID"
-            value={manualId}
-            onChange={(e) => setManualId(e.target.value)}
-            style={{ width: 360, marginRight: 8 }}
-          />
-          <button
-            onClick={() => {
-              if (manualId.trim()) setOrg({ id: manualId.trim(), name: 'Manual' })
-              else setError('Organization ID is required')
-            }}
-          >
-            Use This Org ID
-          </button>
-          {error && (
-            <div style={{ color: 'crimson', marginTop: 4 }}>{error}</div>
-          )}
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">System Configuration</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <Label className="font-medium">Organization:</Label>
+            <div className="mt-1">
+              {org ? (
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline">{org.name}</Badge>
+                  <code className="text-xs text-muted-foreground">({org.id})</code>
+                </div>
+              ) : (
+                <div className="text-muted-foreground">
+                  Loading…{' '}
+                  <span className="text-xs">(if this persists, paste an Organization ID below)</span>
+                </div>
+              )}
+            </div>
+          </div>
+          <div>
+            <Label className="font-medium">Calendar:</Label>
+            <div className="mt-1">
+              <code className="text-sm bg-muted px-2 py-1 rounded">{calendarId}</code>
+            </div>
+          </div>
         </div>
-      )}
-    </div>
+        {!org && (
+          <div className="space-y-2">
+            <Label htmlFor="org-id">Manual Organization ID</Label>
+            <div className="flex gap-2">
+              <input
+                id="org-id"
+                className="flex-1 px-3 py-2 text-sm border border-input rounded-md bg-background"
+                placeholder="Paste Organization ID"
+                value={manualId}
+                onChange={(e) => setManualId(e.target.value)}
+              />
+              <Button
+                onClick={() => {
+                  if (manualId.trim()) setOrg({ id: manualId.trim(), name: 'Manual' })
+                  else setError('Organization ID is required')
+                }}
+                size="sm"
+              >
+                Use This Org ID
+              </Button>
+            </div>
+            {error && (
+              <Alert>
+                <AlertDescription className="text-destructive">{error}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

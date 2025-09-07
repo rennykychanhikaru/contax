@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   let busy = [] as { start: string; end: string }[]
 
   // Try Google Calendar freebusy if access token is provided
-  const c = cookies()
+  const c = await cookies()
   let gAccessToken = c.get('gcal_access')?.value || c.get('gcal_token')?.value || process.env.GOOGLE_CALENDAR_ACCESS_TOKEN
   const refreshTok = c.get('gcal_refresh')?.value
   const expiry = Number(c.get('gcal_expiry')?.value || 0)
