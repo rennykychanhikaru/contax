@@ -33,6 +33,7 @@
   ],
   "private": true,
   "dependencies": {
+    "@makerkit/cli": "^1.3.13",
     "@remix-run/react": "^2.4.1",
     "@supabase/supabase-js": "^2.39.1",
     "@tanstack/react-query": "^5.15.0",

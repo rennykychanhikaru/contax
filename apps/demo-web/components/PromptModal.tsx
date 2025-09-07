@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Dialog, DialogActions, Button, Textarea } from '@kit/ui'
 
 export function PromptModal({
   open,
@@ -18,39 +19,15 @@ export function PromptModal({
   const [value, setValue] = useState(initialValue)
   useEffect(() => setValue(initialValue), [initialValue])
 
-  if (!open) return null
   return (
-    <div style={backdrop} onClick={onClose}>
-      <div style={modal} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ marginTop: 0 }}>{title}</h3>
-        <textarea
-          style={{ width: '100%', minHeight: 160, fontFamily: 'monospace' }}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button onClick={onClose}>Cancel</button>
-          <button onClick={() => onSave(value)}>Save</button>
-        </div>
-      </div>
-    </div>
+    <Dialog open={open} onOpenChange={(v) => (v ? null : onClose())} title={title}>
+      <Textarea style={{ minHeight: 160, fontFamily: 'monospace' }} value={value} onChange={(e) => setValue(e.target.value)} />
+      <DialogActions>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="primary" onClick={() => onSave(value)}>
+          Save
+        </Button>
+      </DialogActions>
+    </Dialog>
   )
-}
-
-const backdrop: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0,0,0,0.4)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center'
-}
-
-const modal: React.CSSProperties = {
-  width: 640,
-  maxWidth: '90vw',
-  background: 'white',
-  padding: 16,
-  borderRadius: 8,
-  boxShadow: '0 10px 30px rgba(0,0,0,0.2)'
 }

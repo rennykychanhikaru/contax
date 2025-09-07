@@ -1,0 +1,3 @@
+[submodule "next-supabase-saas-kit-turbo"]
+	path = next-supabase-saas-kit-turbo
+	url = https://github.com/makerkit/next-supabase-saas-kit-turbo.git

@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
-import { refreshGoogleAccessToken } from '../../../../lib/google'
-import { createClient } from '@supabase/supabase-js'
+import { refreshGoogleAccessToken, getAccountTimezone } from '../../../../lib/google'
+// No DB usage in Google-only mode
 
 type Payload = {
   organizationId?: string
@@ -19,9 +19,7 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'start and end required' }), { status: 400 })
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
-  const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null
+  // DB disabled: using Google only
 
   let busy = [] as { start: string; end: string }[]
 
@@ -43,19 +41,36 @@ export async function POST(req: NextRequest) {
     }
   }
   // Resolve organization timezone (for naive datetime coercion)
-  let orgTz: string | undefined
-  if (supabase && organizationId) {
-    const { data: orgRow } = await supabase
-      .from('organizations')
-      .select('timezone')
-      .eq('id', organizationId)
-      .single()
-    orgTz = orgRow?.timezone || undefined
+  // Do not read org timezone from DB; use Google account timezone
+
+  // If we have Google token, try to pull primary/selected calendar TZ
+  // Prefer account timezone from Google, then org timezone
+  let accountTz: string | undefined
+  if (gAccessToken) {
+    accountTz = await getAccountTimezone(gAccessToken) || undefined
   }
+  const baseTz = accountTz
 
   // Normalize datetimes to RFC3339 with timezone if not provided
-  const normStart = normalizeRfc3339(start, orgTz)
-  const normEnd = normalizeRfc3339(end, orgTz)
+  const normStart = normalizeRfc3339(start, baseTz)
+  const normEnd = normalizeRfc3339(end, baseTz)
+
+  // Guardrail: reject overly broad windows (force day-availability tool)
+  try {
+    const ms = Date.parse(normEnd) - Date.parse(normStart)
+    const fourHours = 4 * 60 * 60 * 1000
+    if (ms > fourHours) {
+      const payload = {
+        error: 'broad_window',
+        message: 'Window too large for slot check; use getAvailableSlots instead',
+        start: normStart,
+        end: normEnd,
+        timeZone: baseTz || null
+      }
+      const r = NextResponse.json(payload, { status: 422 })
+      return r
+    }
+  } catch {}
 
   let gError: string | undefined
   let usedGoogleCalendars: string[] = []
@@ -68,7 +83,9 @@ export async function POST(req: NextRequest) {
           headers: { Authorization: `Bearer ${gAccessToken}` }
         }).then((r) => (r.ok ? r.json() : null))
         if (cl?.items?.length) {
-          ids = cl.items.filter((c: any) => c.selected === true || c.primary === true).map((c: any) => c.id)
+          ids = cl.items
+            .filter((c: any) => (c.selected === true || c.primary === true) && (c.accessRole === 'owner' || c.accessRole === 'writer'))
+            .map((c: any) => c.id)
         }
       }
       if (!ids.length) ids = [calendarId]
@@ -77,7 +94,12 @@ export async function POST(req: NextRequest) {
       const r = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
         method: 'POST',
         headers: { Authorization: `Bearer ${gAccessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeMin: normStart, timeMax: normEnd, items: ids.map((id) => ({ id })) })
+        body: JSON.stringify({
+          timeMin: normStart,
+          timeMax: normEnd,
+          timeZone: baseTz || 'UTC',
+          items: ids.map((id) => ({ id }))
+        })
       })
       if (r.ok) {
         const freebusy = await r.json()
@@ -95,29 +117,16 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Check Supabase appointments as well (only if we have env and organizationId)
-  let conflicts: any[] = []
-  if (supabase && organizationId) {
-    const { data } = await supabase
-      .from('appointments')
-      .select('id, scheduled_start, scheduled_end, status')
-      .eq('organization_id', organizationId)
-      .neq('status', 'cancelled')
-      .gte('scheduled_start', normStart)
-      .lt('scheduled_end', normEnd)
-    conflicts = data || []
-  }
-
-  const hasConflict = (conflicts?.length || 0) > 0 || busy.length > 0
+  const hasConflict = busy.length > 0
   const resp = {
     available: !hasConflict,
-    conflicts: { google: busy, db: conflicts },
+    conflicts: { google: busy },
     usedGoogle: !!gAccessToken,
-    usedDB: !!(supabase && organizationId),
     googleError: gError,
     usedGoogleCalendars,
     start: normStart,
-    end: normEnd
+    end: normEnd,
+    timeZone: baseTz || null
   }
   const r = NextResponse.json(resp)
   setCookies.forEach((kv) => r.cookies.set(kv.name, kv.value, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' }))
@@ -127,10 +136,12 @@ export async function POST(req: NextRequest) {
 // Helpers: add timezone offset to naive RFC3339 values using Intl
 function normalizeRfc3339(input: string, timeZone?: string): string {
   if (!input) return input
-  const hasTz = /[zZ]|[+-]\d{2}:\d{2}$/.test(input)
-  let s = input
+  // Always interpret the wall-clock portion in the provided timezone (if given),
+  // ignoring any incoming offset to avoid ET/UTC mismatches.
+  // 1) Extract YYYY-MM-DDTHH:MM(:SS) and discard any zone suffix.
+  let s = input.trim()
+  s = s.replace(/[zZ]$/,'').replace(/[+-]\d{2}:\d{2}$/,'')
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) s += ':00'
-  if (hasTz) return s
   if (!timeZone) return s + 'Z'
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/)
   if (!m) return s + 'Z'

@@ -17,3 +17,16 @@ export async function refreshGoogleAccessToken(
   return (await r.json()) as any
 }
 
+export async function getAccountTimezone(accessToken: string): Promise<string | null> {
+  try {
+    const r = await fetch('https://www.googleapis.com/calendar/v3/users/me/settings/timezone', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    })
+    if (!r.ok) return null
+    const j = await r.json()
+    // Response shape: { kind, etag, value: 'Europe/Amsterdam' }
+    return j?.value || null
+  } catch {
+    return null
+  }
+}

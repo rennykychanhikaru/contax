@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
-import { refreshGoogleAccessToken } from '../../../../lib/google'
+import { refreshGoogleAccessToken, getAccountTimezone } from '../../../../lib/google'
 
 type Status = {
   connected: boolean
@@ -9,6 +9,8 @@ type Status = {
   scopes?: string[]
   calendars?: { id: string; summary: string; primary?: boolean; accessRole?: string; selected?: boolean }[]
   primaryReachable?: boolean
+  primaryTimeZone?: string
+  accountTimeZone?: string
   errors?: { step: string; message: string }[]
 }
 
@@ -59,7 +61,10 @@ export async function GET(req: NextRequest) {
     })
     if (r.ok) {
       const j = await r.json()
-      res.calendars = (j.items || []).map((c: any) => ({ id: c.id, summary: c.summary, primary: !!c.primary, accessRole: c.accessRole, selected: !!c.selected }))
+      const items = (j.items || [])
+      res.calendars = items.map((c: any) => ({ id: c.id, summary: c.summary, primary: !!c.primary, accessRole: c.accessRole, selected: !!c.selected }))
+      const primary = items.find((c: any) => c.primary) || items.find((c: any) => c.selected)
+      if (primary?.timeZone) res.primaryTimeZone = primary.timeZone
     } else {
       res.errors!.push({ step: 'calendarList', message: `${r.status} ${await r.text()}` })
     }
@@ -86,6 +91,12 @@ export async function GET(req: NextRequest) {
     res.primaryReachable = false
     res.errors!.push({ step: 'freeBusy', message: e?.message || 'freeBusy failed' })
   }
+
+  // 4) Account timezone (authoritative)
+  try {
+    const tz = await getAccountTimezone(token)
+    if (tz) res.accountTimeZone = tz
+  } catch {}
 
   res.connected = !!res.scopes && Array.isArray(res.calendars) && res.primaryReachable === true
   const r = NextResponse.json(res)

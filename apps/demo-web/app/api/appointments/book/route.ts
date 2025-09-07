@@ -1,8 +1,8 @@
 import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { NextResponse } from 'next/server'
-import { refreshGoogleAccessToken } from '../../../../lib/google'
-import { createClient } from '@supabase/supabase-js'
+import { refreshGoogleAccessToken, getAccountTimezone } from '../../../../lib/google'
+// No DB usage in Google-only mode
 
 type Payload = {
   organizationId: string
@@ -20,41 +20,9 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: 'organizationId, start, end required' }), { status: 400 })
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
-  if (!supabaseUrl || !supabaseKey) {
-    return new Response(JSON.stringify({ error: 'Missing Supabase env' }), { status: 500 })
-  }
-  const supabase = createClient(supabaseUrl, supabaseKey)
+  // DB disabled
 
-  // Normalize datetimes with org timezone if needed
-  let orgTz: string | undefined
-  const { data: orgRow } = await supabase.from('organizations').select('timezone').eq('id', organizationId).single()
-  orgTz = orgRow?.timezone || undefined
-  const normStart = normalizeRfc3339(start, orgTz)
-  const normEnd = normalizeRfc3339(end, orgTz)
-
-  // Insert appointment locally first
-  const { data: appt, error } = await supabase
-    .from('appointments')
-    .insert({
-      organization_id: organizationId,
-      customer_name: customer?.name || null,
-      customer_phone: customer?.phone || null,
-      customer_email: customer?.email || null,
-      scheduled_start: normStart,
-      scheduled_end: normEnd,
-      status: 'confirmed',
-      notes: notes || null
-    })
-    .select()
-    .single()
-
-  if (error) {
-    return new Response(JSON.stringify({ error: 'DB insert failed', detail: error.message }), { status: 500 })
-  }
-
-  // Optionally create Google Calendar event if access token provided
+  // Optionally use Google access token
   const c = cookies()
   let gAccessToken = c.get('gcal_access')?.value || c.get('gcal_token')?.value || process.env.GOOGLE_CALENDAR_ACCESS_TOKEN
   const refreshTok = c.get('gcal_refresh')?.value
@@ -71,6 +39,61 @@ export async function POST(req: NextRequest) {
       setCookies.push({ name: 'gcal_token', value: gAccessToken })
     }
   }
+
+  // Normalize datetimes using org or account timezone
+  // Use only Google account timezone
+  const accountTz = gAccessToken ? await getAccountTimezone(gAccessToken) : null
+  const baseTz = accountTz || undefined
+  const normStart = normalizeRfc3339(start, baseTz)
+  const normEnd = normalizeRfc3339(end, baseTz)
+
+  // No DB pre-check; Google is the source of truth
+
+  // Guardrail: verify not busy on Google via FreeBusy before inserting
+  if (gAccessToken) {
+    try {
+      let ids: string[] = []
+      const cl = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+        headers: { Authorization: `Bearer ${gAccessToken}` }
+      }).then((r) => (r.ok ? r.json() : null))
+      if (cl?.items?.length) {
+        ids = cl.items
+          .filter((cal: any) => (cal.selected === true || cal.primary === true) && (cal.accessRole === 'owner' || cal.accessRole === 'writer'))
+          .map((cal: any) => cal.id)
+      }
+      if (!ids.length) ids = [calendarId]
+
+      const fb = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${gAccessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timeMin: normStart, timeMax: normEnd, timeZone: baseTz || 'UTC', items: ids.map((id) => ({ id })) })
+      })
+      if (fb.ok) {
+        const j = await fb.json()
+        let busy: { start: string; end: string }[] = []
+        for (const id of ids) busy = busy.concat(j?.calendars?.[id]?.busy || [])
+        if (busy.length) {
+          const r = NextResponse.json(
+            { error: 'conflict', message: 'Requested time is busy on Google Calendar', conflicts: busy, usedGoogleCalendars: ids, timeZone: baseTz || null },
+            { status: 409 }
+          )
+          setCookies.forEach((kv) => r.cookies.set(kv.name, kv.value, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' }))
+          return r
+        }
+      } else {
+        const text = await fb.text()
+        const r = NextResponse.json({ error: 'google_freebusy_failed', detail: text }, { status: 502 })
+        setCookies.forEach((kv) => r.cookies.set(kv.name, kv.value, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' }))
+        return r
+      }
+    } catch (e: any) {
+      const r = NextResponse.json({ error: 'freebusy_exception', detail: e?.message || 'failed' }, { status: 502 })
+      setCookies.forEach((kv) => r.cookies.set(kv.name, kv.value, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' }))
+      return r
+    }
+  }
+
+  // No local DB insert
   let googleEventId: string | undefined
   let googleError: string | undefined
   if (gAccessToken) {
@@ -78,8 +101,8 @@ export async function POST(req: NextRequest) {
       const event = {
         summary: `Appointment: ${customer?.name || 'Customer'}`,
         description: `Phone: ${customer?.phone || ''}\n${notes || ''}`.trim(),
-        start: { dateTime: normStart },
-        end: { dateTime: normEnd }
+        start: { dateTime: normStart, timeZone: baseTz },
+        end: { dateTime: normEnd, timeZone: baseTz }
       }
       const resp = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
         method: 'POST',
@@ -89,7 +112,6 @@ export async function POST(req: NextRequest) {
       if (resp.ok) {
         const data = await resp.json()
         googleEventId = data.id
-        await supabase.from('appointments').update({ google_event_id: googleEventId }).eq('id', appt.id)
       } else {
         googleError = `${resp.status} ${await resp.text()}`
       }
@@ -98,7 +120,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const r = NextResponse.json({ appointment: { ...appt, google_event_id: googleEventId }, googleError, start: normStart, end: normEnd })
+  const r = NextResponse.json({ appointment: googleEventId ? { google_event_id: googleEventId } : null, googleError, start: normStart, end: normEnd, timeZone: baseTz || null })
   setCookies.forEach((kv) => r.cookies.set(kv.name, kv.value, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' }))
   return r
 }
@@ -106,10 +128,10 @@ export async function POST(req: NextRequest) {
 // Helpers shared with availability route
 function normalizeRfc3339(input: string, timeZone?: string): string {
   if (!input) return input
-  const hasTz = /[zZ]|[+-]\d{2}:\d{2}$/.test(input)
-  let s = input
+  // Always treat the provided wall time as being in the given timezone (ignore incoming offset)
+  let s = input.trim()
+  s = s.replace(/[zZ]$/,'').replace(/[+-]\d{2}:\d{2}$/,'')
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) s += ':00'
-  if (hasTz) return s
   if (!timeZone) return s + 'Z'
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/)
   if (!m) return s + 'Z'

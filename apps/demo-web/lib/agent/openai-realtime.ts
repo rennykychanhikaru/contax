@@ -1,7 +1,7 @@
 import type { AgentAdapter } from '../adapters/types'
 
 type ToolEvent =
-  | { kind: 'event'; type: string }
+  | { kind: 'event'; type: string; text?: string }
   | { kind: 'call'; name: string; args: string }
   | { kind: 'result'; name: string; result: any }
 
@@ -17,16 +17,110 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private defaultCalendarId: string | undefined
   private toolHintSent = false
   private onToolEvent?: (e: ToolEvent) => void
+  private onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
+  private calendarIds: string[] | undefined
+  private awaitingTool: boolean = false
+  private awaitingToolTimer: any = null
+  private fallbackTimer: any = null
+  private lastTranscript: string = ''
+  private tz: string | undefined
 
-  constructor(opts?: { onTranscript?: (text: string) => void; onToolEvent?: (e: ToolEvent) => void }) {
+  constructor(opts?: {
+    onTranscript?: (text: string) => void
+    onToolEvent?: (e: ToolEvent) => void
+    onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
+  }) {
     this.audioEl = new Audio()
     this.onTranscript = opts?.onTranscript
     this.onToolEvent = opts?.onToolEvent
+    this.onSlots = opts?.onSlots
+  }
+
+  setCalendarIds(ids: string[] | undefined) {
+    this.calendarIds = ids && ids.length ? [...ids] : undefined
+  }
+
+  private requireTool(name: 'check' | 'slots', opts?: { text?: string }) {
+    // Cancel any current generation and require a tool call
+    try { this.sendOAI({ type: 'response.cancel' }) } catch {}
+    const instructions =
+      name === 'slots'
+        ? 'User asked for day availability. Call getAvailableSlots with the requested date (YYYY-MM-DD). Do not state times unless they come from the tool result.'
+        : 'User asked for a specific time. Call checkAvailability with start at that exact local time and end=start+60 minutes (unless user specified a duration). Do not speak availability before tool result.'
+    this.sendOAI({ type: 'response.create', response: { instructions, tool_choice: 'required', modalities: ['audio', 'text'] } })
+    this.awaitingTool = true
+    if (this.awaitingToolTimer) clearTimeout(this.awaitingToolTimer)
+    this.awaitingToolTimer = setTimeout(() => {
+      if (this.awaitingTool) {
+        // Re-prompt once
+        this.sendOAI({ type: 'response.create', response: { instructions, tool_choice: 'required', modalities: ['audio', 'text'] } })
+      }
+    }, 2000)
+
+    // Fallback after 3500ms for specific-time queries: parse transcript and call API directly
+    if (name === 'check') {
+      if (this.fallbackTimer) clearTimeout(this.fallbackTimer)
+      this.fallbackTimer = setTimeout(() => {
+        if (!this.awaitingTool) return
+        const parsed = this.parseSlotFromTranscript(this.lastTranscript, this.tz)
+        if (!parsed) return
+        const organizationId = this.defaultOrgId
+        const calendarId = this.defaultCalendarId
+        fetch('/api/calendar/check-availability', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ organizationId, start: parsed.start, end: parsed.end, calendarId, calendarIds: this.calendarIds })
+        })
+          .then(async (r) => ({ ok: r.ok, j: await r.json().catch(() => ({})) }))
+          .then(({ ok, j }) => {
+            this.awaitingTool = false
+            if (ok && j?.available === true) {
+              this.speak(`That time is available: ${this.fmtRange(j.start || parsed.start, j.end || parsed.end, j.timeZone || this.tz)}. Should I book it?`)
+            } else if (ok && j?.available === false) {
+              const date = (j.start || parsed.start).slice(0, 10)
+              fetch('/api/calendar/slots', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ date, slotMinutes: 60, calendarIds: this.calendarIds })
+              })
+                .then(async (r2) => ({ ok2: r2.ok, j2: await r2.json().catch(() => ({})) }))
+                .then(({ ok2, j2 }) => {
+                  if (ok2 && Array.isArray(j2?.slots) && j2.slots.length) {
+                    const list = j2.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, j2.timeZone || this.tz)).join(', ')
+                    this.speak(`That time is not available. Here are some options: ${list}.`)
+                  } else {
+                    this.speak('That time is not available and I could not retrieve alternative slots.')
+                  }
+                })
+            } else {
+              this.speak('I could not verify that time just now.')
+            }
+          })
+          .catch(() => this.speak('I could not verify that time just now.'))
+      }, 3500)
+    }
+  }
+
+  private speak(text: string) {
+    this.onToolEvent?.({ kind: 'event', type: 'spoken', text })
+    this.sendOAI({ type: 'response.create', response: { instructions: text, modalities: ['audio', 'text'] } })
+  }
+
+  private fmtTime(iso: string, tz?: string) {
+    try {
+      const d = new Date(iso)
+      const fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', minute: '2-digit' })
+      return fmt.format(d)
+    } catch { return iso }
+  }
+
+  private fmtRange(startIso: string, endIso: string, tz?: string) {
+    return `${this.fmtTime(startIso, tz)} – ${this.fmtTime(endIso, tz)}`
   }
 
   async connect(
     systemPrompt: string,
-    opts?: { organizationId?: string; calendarId?: string; greeting?: string; language?: string }
+    opts?: { organizationId?: string; calendarId?: string; greeting?: string; language?: string; timeZone?: string }
   ): Promise<void> {
     const session = await fetch('/api/realtime/token', {
       method: 'POST',
@@ -36,7 +130,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         organizationId: opts?.organizationId,
         calendarId: opts?.calendarId || 'primary',
         greeting: opts?.greeting,
-        language: opts?.language || 'en-US'
+        language: opts?.language || 'en-US',
+        timeZone: opts?.timeZone
       })
     }).then((r) => r.json())
 
@@ -46,6 +141,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
     this.defaultOrgId = opts?.organizationId
     this.defaultCalendarId = opts?.calendarId || 'primary'
+    this.tz = opts?.timeZone
 
     const pc = new RTCPeerConnection()
     this.pc = pc
@@ -136,13 +232,19 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         if (this.onTranscript) this.onTranscript(msg.text)
         // After first user transcript, arm tool usage with explicit guidance (once)
         if (!this.toolHintSent) {
-          const toolHint = `Use tools for scheduling. First call checkAvailability for the requested time; if available, call bookAppointment. Format dates as RFC3339 with timezone (e.g., 2025-09-10T10:00:00-04:00). Default organizationId=${this.defaultOrgId || 'unknown'}, calendarId=${this.defaultCalendarId || 'primary'}.`
+          const toolHint = `Use tools for scheduling. When the caller mentions a specific time, call checkAvailability with start at that exact local time and end=start+60 minutes (unless the user requested a different duration). Do not check a whole day when a specific time was requested. If checkAvailability shows conflicts, do not proceed to booking; propose the next free times. Format dates as RFC3339 with timezone (e.g., 2025-09-10T10:00:00-04:00). Default organizationId=${this.defaultOrgId || 'unknown'}, calendarId=${this.defaultCalendarId || 'primary'}.`
           this.sendOAI({
             type: 'response.create',
             response: { instructions: toolHint, tool_choice: 'auto', modalities: ['audio', 'text'] }
           })
           this.toolHintSent = true
         }
+        // Heuristic: day availability question -> require getAvailableSlots
+        const t = (msg.text as string).toLowerCase()
+        const hasTime = /\b(\d{1,2})(?::(\d{2}))?\s?(am|pm)?\b/.test(t) || /\bnoon\b|\bmidnight\b/.test(t)
+        const dayQuery = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this\s+week|availability|free|open)\b/.test(t)
+        if (dayQuery && !hasTime) this.requireTool('slots')
+        if (hasTime) this.requireTool('check')
       }
 
       // Tool calling (function calling) handlers – support current and legacy event names
@@ -161,6 +263,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         msg.type === 'response.function_call.arguments.delta' ||
         msg.type === 'response.function_call_arguments.delta'
       ) {
+        this.awaitingTool = false
         const callId = (msg.call_id as string) || (msg.id as string)
         const name = (msg.name as string) || (this.toolArgsBuffers.get(callId)?.name ?? 'unknown')
         const delta = (msg.delta as string) || ''
@@ -174,6 +277,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         msg.type === 'response.function_call.arguments.done' ||
         msg.type === 'response.function_call_arguments.done'
       ) {
+        this.awaitingTool = false
         const callId = (msg.call_id as string) || (msg.id as string)
         if (!callId) return
         const buf = this.toolArgsBuffers.get(callId)
@@ -183,6 +287,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         this.invokeTool(callId, buf.name, buf.args)
       }
       if (msg.type === 'response.function_call.completed') {
+        this.awaitingTool = false
         // Some backends emit a single completed event with full arguments
         const callId = (msg.call_id as string) || (msg.id as string)
         const name = (msg.name as string) || 'unknown'
@@ -214,6 +319,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         if (args && typeof args === 'object') {
           if (args.start && args.end && !args.customer) effective = 'checkAvailability'
           else if (args.start && args.end && args.customer) effective = 'bookAppointment'
+          else if (args.date) effective = 'getAvailableSlots'
         }
       }
 
@@ -226,18 +332,49 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           await this.sendToolResult(callId, { error: 'Missing start/end' })
           return
         }
-        const res = await fetch('/api/calendar/check-availability', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            organizationId,
-            start: args.start,
-            end: args.end,
-            calendarId
+        const res = await (async () => {
+          const r = await fetch('/api/calendar/check-availability', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ organizationId, start: args.start, end: args.end, calendarId, calendarIds: this.calendarIds })
           })
-        }).then((r) => r.json())
-        this.onToolEvent?.({ kind: 'result', name, result: res })
+          try {
+            const j = await r.json()
+            return r.ok ? j : { error: 'http_error', status: r.status, detail: j }
+          } catch {
+            const t = await r.text().catch(() => '')
+            return { error: 'http_error', status: r.status, detail: t }
+          }
+        })()
+        this.onToolEvent?.({ kind: 'result', name: effective, result: res })
         await this.sendToolResult(callId, res)
+        try {
+          if ((res as any)?.error === 'broad_window') {
+            this.requireTool('slots')
+          } else if ((res as any)?.available === true) {
+            const tz = (res as any)?.timeZone
+            const s = (res as any)?.start || args.start
+            const e = (res as any)?.end || args.end
+            this.speak(`That time is available: ${this.fmtRange(s, e, tz)}. Should I book it?`)
+          } else if ((res as any)?.available === false) {
+            const date = ((res as any)?.start || (args.start as string)).slice(0, 10)
+            const r2 = await fetch('/api/calendar/slots', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ date, slotMinutes: 60, calendarIds: this.calendarIds })
+            })
+            let j: any = null
+            try { j = await r2.json() } catch {}
+            if (r2.ok && j?.slots?.length) {
+              const tz2 = j.timeZone
+              try { this.onSlots?.(j.slots, tz2) } catch {}
+              const list = j.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, tz2)).join(', ')
+              this.speak(`That time is not available. Here are some options: ${list}.`)
+            } else {
+              this.speak('That time is not available and I could not retrieve alternative slots.')
+            }
+          }
+        } catch {}
       } else if (effective === 'bookAppointment') {
         const organizationId = args.organizationId || this.defaultOrgId
         const calendarId = args.calendarId || this.defaultCalendarId
@@ -245,20 +382,69 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           await this.sendToolResult(callId, { error: 'Missing organizationId' })
           return
         }
-        const res = await fetch('/api/appointments/book', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            organizationId,
-            customer: args.customer,
-            start: args.start,
-            end: args.end,
-            notes: args.notes,
-            calendarId
+        const res = await (async () => {
+          const r = await fetch('/api/appointments/book', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ organizationId, customer: args.customer, start: args.start, end: args.end, notes: args.notes, calendarId })
           })
-        }).then((r) => r.json())
-        this.onToolEvent?.({ kind: 'result', name, result: res })
+          try {
+            const j = await r.json()
+            return r.ok ? j : { error: 'http_error', status: r.status, detail: j }
+          } catch {
+            const t = await r.text().catch(() => '')
+            return { error: 'http_error', status: r.status, detail: t }
+          }
+        })()
+        this.onToolEvent?.({ kind: 'result', name: effective, result: res })
         await this.sendToolResult(callId, res)
+        try {
+          if (res?.error === 'conflict') {
+            this.speak('That time is busy. Would you like me to suggest alternatives?')
+          } else if (res?.appointment) {
+            const tz = res?.timeZone
+            const s = res?.start || args.start
+            const e = res?.end || args.end
+            this.speak(`Booked: ${this.fmtRange(s, e, tz)}. I have added it to the calendar.`)
+          }
+        } catch {}
+      } else if (effective === 'getAvailableSlots') {
+        const organizationId = args.organizationId || this.defaultOrgId
+        const res = await (async () => {
+          const r = await fetch('/api/calendar/slots', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              organizationId,
+              date: args.date,
+              slotMinutes: args.slotMinutes,
+              businessHours: args.businessHours,
+              calendarIds: this.calendarIds
+            })
+          })
+          try {
+            const j = await r.json()
+            return r.ok ? j : { error: 'http_error', status: r.status, detail: j }
+          } catch {
+            const t = await r.text().catch(() => '')
+            return { error: 'http_error', status: r.status, detail: t }
+          }
+        })()
+        this.onToolEvent?.({ kind: 'result', name: effective, result: res })
+        await this.sendToolResult(callId, res)
+        try {
+          if (Array.isArray(res?.slots)) {
+            const tz = res?.timeZone
+            try { this.onSlots?.(res.slots, tz) } catch {}
+            if (res.slots.length === 0) this.speak('No free slots found that day.')
+            else {
+              const list = res.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, tz)).join(', ')
+              this.speak(`Available slots are: ${list}.`)
+            }
+          } else if (res?.error) {
+            this.speak('I could not retrieve the day availability at the moment.')
+          }
+        } catch {}
       } else {
         const err = { error: `Unknown tool ${name || 'unknown'}` }
         this.onToolEvent?.({ kind: 'result', name, result: err })
@@ -281,8 +467,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         output: JSON.stringify(result)
       }
     }
+    // Do NOT auto-trigger a model response; we will speak deterministic text from tool results.
     this.sendOAI(createItem)
-    this.sendOAI({ type: 'response.create' })
   }
 
   private attachDataChannel(channel: RTCDataChannel) {

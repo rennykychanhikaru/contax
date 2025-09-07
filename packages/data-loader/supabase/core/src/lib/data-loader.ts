@@ -1,11 +1,7 @@
 import { objectToCamel } from 'ts-case-convert';
-import { PostgrestFilterBuilder } from '@supabase/postgrest-js';
-import { GetResult } from '@supabase/postgrest-js/dist/module/select-query-parser';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { DataLoader } from './data-loader-types';
 import { buildPostgrestQuery } from './utils';
-
-import Relationships = DataLoader.Relationships;
 
 /**
  * @name fetchDataFromSupabase
@@ -56,19 +52,9 @@ export async function fetchDataFromSupabase<
   const selectString = buildPostgrestQuery(select);
   const tableRef = client.from(table as string);
 
-  let query: PostgrestFilterBuilder<
-    DataLoader.ExtractDatabase<Client>['public'],
-    DataLoader.Row<DataLoader.ExtractDatabase<Client>, TableName>,
-    | GetResult<
-        DataLoader.ExtractDatabase<Client>['public'],
-        DataLoader.Row<DataLoader.ExtractDatabase<Client>, TableName>,
-        TableName,
-        Relationships<DataLoader.ExtractDatabase<Client>, TableName>,
-        string
-      >
-    | DataLoader.GenericStringError[],
-    Relationships<DataLoader.ExtractDatabase<Client>, TableName>
-  > = tableRef.select(selectString, {
+  // Type assertion needed due to version mismatch in @supabase/postgrest-js
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let query: any = tableRef.select(selectString, {
     count: count ?? 'exact',
   });
 

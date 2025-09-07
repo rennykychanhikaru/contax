@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { Card, CardHeader, CardBody, Button } from '@kit/ui'
 
 type GCalStatus = {
   connected: boolean
@@ -35,45 +36,31 @@ export function CalendarStatus() {
   const color = connected ? '#0a7' : '#c33'
 
   return (
-    <div style={{ marginBottom: 12, padding: 8, background: '#fafafa', borderRadius: 6 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ width: 10, height: 10, borderRadius: 6, background: color }} />
-        <strong>Google Calendar:</strong>
-        <span>
-          {status
-            ? connected
-              ? 'Connected'
-              : status.hasToken
-              ? 'Token present, but connection failed'
-              : 'Token missing'
-            : 'Checking…'}
-        </span>
-        <button
-          onClick={() => {
-            // Open OAuth consent flow
-            window.location.href = '/api/google/oauth/start'
-          }}
-          style={{ marginLeft: 'auto' }}
-        >
-          Connect Google
-        </button>
-      </div>
-      {status?.scopes && (
-        <div style={{ marginTop: 6, color: '#555' }}>
-          Scopes: <code>{status.scopes.join(' ')}</code>
+    <Card>
+      <CardHeader>
+        <div className="mk-row">
+          <div style={{ width: 10, height: 10, borderRadius: 6, background: color }} />
+          <div>
+            <strong>Google Calendar:</strong>{' '}
+            {status ? (connected ? 'Connected' : status.hasToken ? 'Token present, but connection failed' : 'Token missing') : 'Checking…'}
+          </div>
+          <div style={{ marginLeft: 'auto' }}>
+            <Button onClick={() => (window.location.href = '/api/google/oauth/start')}>Connect Google</Button>
+          </div>
         </div>
-      )}
-      {status?.calendars && (
-        <div style={{ marginTop: 6, color: '#555' }}>
-          Calendars: {status.calendars.map((c) => `${c.summary}${c.primary ? ' (primary)' : ''}`).join(', ')}
-        </div>
-      )}
-      {status?.errors && status.errors.length > 0 && (
-        <div style={{ marginTop: 6, color: '#a00' }}>
-          Errors: {status.errors.map((e) => `${e.step}: ${e.message}`).join(' | ')}
-        </div>
-      )}
-
-    </div>
+      </CardHeader>
+      <CardBody>
+        {status?.scopes && (
+          <div className="mk-label">Scopes: <code>{status.scopes.join(' ')}</code></div>
+        )}
+        {status?.calendars && (
+          <div className="mk-label">Calendars: {status.calendars.map((c) => `${c.summary}${c.primary ? ' (primary)' : ''}`).join(', ')}
+          </div>
+        )}
+        {status?.errors && status.errors.length > 0 && (
+          <div style={{ color: '#a00' }}>Errors: {status.errors.map((e) => `${e.step}: ${e.message}`).join(' | ')}</div>
+        )}
+      </CardBody>
+    </Card>
   )
 }
