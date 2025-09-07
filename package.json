@@ -12,8 +12,12 @@
     "supabase:start": "supabase start",
     "supabase:stop": "supabase stop",
     "supabase:reset": "supabase db reset",
+    "supabase:migrate": "supabase migration up",
     "typegen": "supabase gen types typescript --local > supabase/database.types.ts",
-    "healthcheck": "nx run-many --target=typecheck,lint,test --all"
+    "healthcheck": "nx run-many --target=typecheck,lint,test --all",
+    "demo:dev": "next dev apps/demo-web",
+    "demo:build": "next build apps/demo-web",
+    "demo:start": "next start apps/demo-web"
   },
   "repository": {
     "type": "git",

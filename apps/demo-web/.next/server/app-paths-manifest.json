@@ -1,0 +1,5 @@
+{
+  "/api/appointments/book/route": "app/api/appointments/book/route.js",
+  "/api/calendar/check-availability/route": "app/api/calendar/check-availability/route.js",
+  "/page": "app/page.js"
+}
