@@ -30,26 +30,6 @@
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/api/realtime/token/route.js"
-    ],
-    "/api/calendar/check-availability/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/calendar/check-availability/route.js"
-    ],
-    "/api/calendar/slots/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/calendar/slots/route.js"
-    ],
-    "/api/google/oauth/start/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/google/oauth/start/route.js"
-    ],
-    "/api/appointments/book/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/appointments/book/route.js"
     ]
   }
 }
