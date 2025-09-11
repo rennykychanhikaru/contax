@@ -47,10 +47,46 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
 }
 
 
-// Validate ../../app/page.tsx
+// Validate ../../app/(home)/page.tsx
 {
-  const handler = {} as typeof import("../../app/page.js")
+  const handler = {} as typeof import("../../app/(home)/page.js")
   handler satisfies AppPageConfig<"/">
+}
+
+// Validate ../../app/agent-settings/page.tsx
+{
+  const handler = {} as typeof import("../../app/agent-settings/page.js")
+  handler satisfies AppPageConfig<"/agent-settings">
+}
+
+// Validate ../../app/auth/sign-in/page.tsx
+{
+  const handler = {} as typeof import("../../app/auth/sign-in/page.js")
+  handler satisfies AppPageConfig<"/auth/sign-in">
+}
+
+// Validate ../../app/auth/sign-up/page.tsx
+{
+  const handler = {} as typeof import("../../app/auth/sign-up/page.js")
+  handler satisfies AppPageConfig<"/auth/sign-up">
+}
+
+// Validate ../../app/settings/page.tsx
+{
+  const handler = {} as typeof import("../../app/settings/page.js")
+  handler satisfies AppPageConfig<"/settings">
+}
+
+// Validate ../../app/api/agents/default/route.ts
+{
+  const handler = {} as typeof import("../../app/api/agents/default/route.js")
+  handler satisfies RouteHandlerConfig<"/api/agents/default">
+}
+
+// Validate ../../app/api/agents/route.ts
+{
+  const handler = {} as typeof import("../../app/api/agents/route.js")
+  handler satisfies RouteHandlerConfig<"/api/agents">
 }
 
 // Validate ../../app/api/appointments/book/route.ts
@@ -113,9 +149,69 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   handler satisfies RouteHandlerConfig<"/api/realtime/token">
 }
 
+// Validate ../../app/api/settings/twilio/route.ts
+{
+  const handler = {} as typeof import("../../app/api/settings/twilio/route.js")
+  handler satisfies RouteHandlerConfig<"/api/settings/twilio">
+}
+
+// Validate ../../app/api/settings/webhook/route.ts
+{
+  const handler = {} as typeof import("../../app/api/settings/webhook/route.js")
+  handler satisfies RouteHandlerConfig<"/api/settings/webhook">
+}
+
+// Validate ../../app/api/test-env/route.ts
+{
+  const handler = {} as typeof import("../../app/api/test-env/route.js")
+  handler satisfies RouteHandlerConfig<"/api/test-env">
+}
+
+// Validate ../../app/api/webhook/[userId]/[token]/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/[userId]/[token]/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/[userId]/[token]">
+}
+
+// Validate ../../app/api/webhook/call-status/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/call-status/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/call-status">
+}
+
+// Validate ../../app/api/webhook/outgoing-call/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/outgoing-call/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/outgoing-call">
+}
+
+// Validate ../../app/api/webhook/trigger-call/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/trigger-call/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/trigger-call">
+}
+
+// Validate ../../app/auth/callback/route.ts
+{
+  const handler = {} as typeof import("../../app/auth/callback/route.js")
+  handler satisfies RouteHandlerConfig<"/auth/callback">
+}
 
 
 
+
+
+// Validate ../../app/(home)/layout.tsx
+{
+  const handler = {} as typeof import("../../app/(home)/layout.js")
+  handler satisfies LayoutConfig<"/">
+}
+
+// Validate ../../app/auth/layout.tsx
+{
+  const handler = {} as typeof import("../../app/auth/layout.js")
+  handler satisfies LayoutConfig<"/auth">
+}
 
 // Validate ../../app/layout.tsx
 {

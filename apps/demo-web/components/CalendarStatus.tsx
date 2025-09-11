@@ -47,7 +47,7 @@ export function CalendarStatus() {
               {status ? (connected ? 'Connected' : status.hasToken ? 'Token present, but connection failed' : 'Token missing') : 'Checking…'}
             </div>
           </div>
-          <Button onClick={() => (window.location.href = '/api/google/oauth/start')}>Connect Google Calendar</Button>
+          <Button variant="secondary" onClick={() => (window.location.href = '/api/google/oauth/start')}>Connect Google Calendar</Button>
         </div>
       </CardHeader>
       <CardContent>

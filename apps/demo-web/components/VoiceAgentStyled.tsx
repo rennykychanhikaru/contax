@@ -2,19 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { OpenAIRealtimeAgent } from '../lib/agent/openai-realtime'
-import { CalendarStatus } from './CalendarStatus'
+import Link from 'next/link'
 
 // Import UI components from local
 import { Button } from './ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
-import { Checkbox } from './ui/checkbox'
-import { Label } from './ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select'
 import { Badge } from './ui/badge'
 import { Alert, AlertDescription } from './ui/alert'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
 import { Separator } from './ui/separator'
-import { ChevronDown, Mic, MicOff, Phone, PhoneOff, Eye, EyeOff, Calendar, Clock, Bug, TestTube2 } from 'lucide-react'
+import { ChevronDown, Mic, MicOff, Phone, PhoneOff, Eye, EyeOff, Clock, Bug, TestTube2, Settings } from 'lucide-react'
 import { cn } from '../lib/utils'
 
 type GCalendar = {
@@ -28,11 +25,13 @@ type GCalendar = {
 export function VoiceAgentStyled({
   systemPrompt = '',
   greeting = 'Hi, how can I help?',
-  language = 'en'
+  language = 'en',
+  agentName = 'Voice Scheduling Assistant'
 }: {
   systemPrompt?: string
   greeting?: string
   language?: string
+  agentName?: string
 }) {
   const [connected, setConnected] = useState(false)
   const [transcript, setTranscript] = useState<string[]>([])
@@ -190,7 +189,7 @@ export function VoiceAgentStyled({
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Phone className="h-5 w-5" />
-            Voice Scheduling Assistant
+            {agentName}
           </CardTitle>
           <CardDescription>
             AI-powered voice agent for calendar management
@@ -212,86 +211,11 @@ export function VoiceAgentStyled({
             </Alert>
           )}
 
-          {/* Calendar Status */}
-          <CalendarStatus />
-
-          {/* Calendar Selection */}
-          {calendars.length > 0 && (
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Calendar className="h-4 w-4" />
-                  Calendar Configuration
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Calendars to check for availability</Label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {calendars.map((c) => (
-                      <div key={c.id} className="flex items-center space-x-2">
-                        <Checkbox
-                          id={c.id}
-                          checked={selectedCalIds.includes(c.id)}
-                          onCheckedChange={(checked) => {
-                            setSelectedCalIds((prev) => {
-                              const next = checked 
-                                ? Array.from(new Set([...prev, c.id])) 
-                                : prev.filter((x) => x !== c.id)
-                              agentRef.current?.setCalendarIds(next)
-                              return next
-                            })
-                          }}
-                        />
-                        <Label 
-                          htmlFor={c.id} 
-                          className="text-sm font-normal cursor-pointer"
-                        >
-                          {c.summary} {c.primary && <Badge variant="outline" className="ml-1">Primary</Badge>}
-                        </Label>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="use-union"
-                    checked={useUnion}
-                    onCheckedChange={(checked) => setUseUnion(checked as boolean)}
-                  />
-                  <Label htmlFor="use-union" className="cursor-pointer">
-                    Use selected calendars for availability checking
-                  </Label>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="book-calendar">Book appointments on</Label>
-                  <Select value={calendarId} onValueChange={(value) => {
-                    setCalendarId(value)
-                    const found = calendars.find((c) => c.id === value)
-                    if (found?.timeZone) setCalendarTz(found.timeZone)
-                  }}>
-                    <SelectTrigger id="book-calendar">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {calendars.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.summary}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardContent>
-            </Card>
-          )}
 
           {/* Action Buttons */}
           <div className="flex gap-2 flex-wrap">
             {!connected ? (
-              <Button onClick={start} className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white">
+              <Button onClick={start} className="flex items-center gap-2">
                 <Mic className="h-4 w-4" />
                 Call Renny's Office
               </Button>
@@ -330,6 +254,16 @@ export function VoiceAgentStyled({
               <Bug className="h-4 w-4" />
               {debugOpen ? 'Hide' : 'Show'} Debug
             </Button>
+
+            <Link href="/agent-settings">
+              <Button
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <Settings className="h-4 w-4" />
+                Agent Settings
+              </Button>
+            </Link>
 
             {/* Test Availability button hidden
             <Button
