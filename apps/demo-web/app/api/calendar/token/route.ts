@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   res.cookies.set('gcal_token', accessToken, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: false, // allow over http://localhost in dev
+    secure: process.env.NODE_ENV === 'production', // Secure in production, allow HTTP in dev
     path: '/'
   })
   return res
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE() {
   const res = NextResponse.json({ ok: true })
-  res.cookies.set('gcal_token', '', { httpOnly: true, sameSite: 'lax', secure: false, path: '/', maxAge: 0 })
+  res.cookies.set('gcal_token', '', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 0 })
   return res
 }
 

@@ -36,13 +36,13 @@ export async function GET(req: NextRequest) {
   const expirySec = nowSec + expiresIn - 60 // 60s early refresh window
 
   const res = NextResponse.redirect(new URL('/', req.url))
-  res.cookies.set('gcal_access', accessToken, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' })
+  res.cookies.set('gcal_access', accessToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
   if (refreshToken) {
-    res.cookies.set('gcal_refresh', refreshToken, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' })
+    res.cookies.set('gcal_refresh', refreshToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
   }
-  res.cookies.set('gcal_expiry', String(expirySec), { httpOnly: true, sameSite: 'lax', secure: false, path: '/' })
+  res.cookies.set('gcal_expiry', String(expirySec), { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
   // Backward compatibility with prior code path
-  res.cookies.set('gcal_token', accessToken, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' })
+  res.cookies.set('gcal_token', accessToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
   return res
 }
 
