@@ -32,20 +32,50 @@ export async function middleware(request: NextRequest) {
   // Auth routes that should redirect if already logged in
   const authPaths = ['/auth/sign-in', '/auth/sign-up'];
   const isAuthPath = authPaths.some(path => request.nextUrl.pathname.startsWith(path));
+  
+  // Onboarding page
+  const isOnboardingPath = request.nextUrl.pathname === '/onboarding';
 
-  // If user is not authenticated and trying to access protected route
-  if (!user && isProtectedPath) {
+  // If user is not authenticated and trying to access protected route or onboarding
+  if (!user && (isProtectedPath || isOnboardingPath)) {
     return NextResponse.redirect(new URL('/auth/sign-in', request.url));
   }
 
-  // If user is authenticated and trying to access auth pages, redirect to home
+  // If user is authenticated and trying to access auth pages
   if (user && isAuthPath) {
+    // Check if user has organization
+    const { data: membership } = await supabase
+      .from('organization_members')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+    
+    // If no organization, redirect to onboarding
+    if (!membership) {
+      return NextResponse.redirect(new URL('/onboarding', request.url));
+    }
+    
+    // Otherwise redirect to home
     return NextResponse.redirect(new URL('/', request.url));
   }
 
-  // For the home page, redirect to login if not authenticated
-  if (!user && request.nextUrl.pathname === '/') {
-    return NextResponse.redirect(new URL('/auth/sign-in', request.url));
+  // For the home page
+  if (request.nextUrl.pathname === '/') {
+    if (!user) {
+      return NextResponse.redirect(new URL('/auth/sign-in', request.url));
+    }
+    
+    // Check if user has organization
+    const { data: membership } = await supabase
+      .from('organization_members')
+      .select('organization_id')
+      .eq('user_id', user.id)
+      .single();
+    
+    // If no organization, redirect to onboarding
+    if (!membership && !isOnboardingPath) {
+      return NextResponse.redirect(new URL('/onboarding', request.url));
+    }
   }
 
   return response;

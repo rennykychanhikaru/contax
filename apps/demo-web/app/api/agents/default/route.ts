@@ -7,7 +7,7 @@ export async function GET(req: NextRequest) {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         getAll() {
@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
     // Get user's organization
     const { data: member } = await supabase
       .from('organization_members')
-      .select('organization_id, organization:organizations(id, name, slug)')
+      .select('organization_id, organization:organizations(id, name)')
       .eq('user_id', user.id)
       .single();
 
@@ -45,24 +45,16 @@ export async function GET(req: NextRequest) {
     }
 
     // Get the default agent settings for the organization
-    let { data: agent, error } = await supabase
-      .from('agent_settings')
+    const { data: agent, error } = await supabase
+      .from('agent_configurations')
       .select('*')
       .eq('organization_id', member.organization_id)
       .eq('name', 'default')
       .single();
 
-    // If no agent settings exist, return default values
-    if (!agent) {
-      agent = {
-        name: 'default',
-        display_name: 'AI Assistant',
-        prompt: 'You are a helpful scheduling assistant for Renny\'s office. You can help callers check calendar availability, schedule meetings, and provide information about available time slots. Be professional, friendly, and efficient in your responses.',
-        greeting: 'Hi! Thanks for calling. I\'m your AI assistant. How can I help you today?',
-        language: 'en',
-        temperature: 0.7,
-        max_tokens: 150
-      };
+    if (error || !agent) {
+      console.error('Error fetching agent:', error);
+      return NextResponse.json({ error: 'No agent configuration found' }, { status: 404 });
     }
 
     return NextResponse.json({ 
@@ -80,7 +72,7 @@ export async function POST(req: NextRequest) {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         getAll() {
@@ -107,7 +99,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { display_name, prompt, greeting, language, temperature, max_tokens, phone_call_enabled, email_enabled, sms_enabled } = body;
+    const { display_name, prompt, greeting, language, temperature, max_tokens, webhook_enabled } = body;
 
     // Get user's organization
     const { data: member } = await supabase
@@ -120,62 +112,79 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No organization found' }, { status: 404 });
     }
 
-    // Check if agent settings already exist
-    const { data: existing } = await supabase
-      .from('agent_settings')
-      .select('id')
+    // First, check if a default agent configuration exists
+    const { data: existingAgent } = await supabase
+      .from('agent_configurations')
+      .select('*')
       .eq('organization_id', member.organization_id)
       .eq('name', 'default')
       .single();
 
+    const agentData: any = {
+      organization_id: member.organization_id,
+      name: 'default',
+      display_name: display_name || 'AI Assistant',
+      prompt: prompt || 'You are a helpful scheduling assistant.',
+      greeting: greeting || 'Hi! Thanks for calling. How can I help you today?',
+      language: language || 'en-US',
+      temperature: temperature || 0.7,
+      max_tokens: max_tokens || 500,
+      webhook_enabled: webhook_enabled || false,
+      updated_at: new Date().toISOString()
+    };
+    
+    // Generate webhook token if enabling webhook for the first time
+    if (webhook_enabled && !existingAgent?.webhook_token) {
+      const { data: tokenResult } = await supabase
+        .rpc('generate_webhook_token');
+      if (tokenResult) {
+        agentData.webhook_token = tokenResult;
+        // Generate the webhook URL
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
+        agentData.webhook_url = `${baseUrl}/api/webhook/agent/${tokenResult}/trigger`;
+      }
+    }
+
     let result;
     
-    if (existing) {
-      // Build update object with only provided fields
+    if (existingAgent) {
+      // Update existing configuration
       const updateData: any = {
         updated_at: new Date().toISOString()
       };
       
       if (display_name !== undefined) updateData.display_name = display_name || 'AI Assistant';
       if (prompt !== undefined) updateData.prompt = prompt;
-      if (greeting !== undefined) updateData.greeting = greeting || null;
-      if (language !== undefined) updateData.language = language || 'en';
+      if (greeting !== undefined) updateData.greeting = greeting;
+      if (language !== undefined) updateData.language = language || 'en-US';
       if (temperature !== undefined) updateData.temperature = temperature || 0.7;
-      if (max_tokens !== undefined) updateData.max_tokens = max_tokens || 150;
-      if (phone_call_enabled !== undefined) updateData.phone_call_enabled = phone_call_enabled;
-      if (email_enabled !== undefined) updateData.email_enabled = email_enabled;
-      if (sms_enabled !== undefined) updateData.sms_enabled = sms_enabled;
+      if (max_tokens !== undefined) updateData.max_tokens = max_tokens || 500;
+      if (webhook_enabled !== undefined) updateData.webhook_enabled = webhook_enabled;
       
-      // Update existing settings
+      // Generate webhook token if enabling webhook for the first time
+      if (webhook_enabled && !existingAgent.webhook_token) {
+        const { data: tokenResult } = await supabase
+          .rpc('generate_webhook_token');
+        if (tokenResult) {
+          updateData.webhook_token = tokenResult;
+          // Generate the webhook URL
+          const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
+          updateData.webhook_url = `${baseUrl}/api/webhook/agent/${tokenResult}/trigger`;
+        }
+      }
+      
       result = await supabase
-        .from('agent_settings')
+        .from('agent_configurations')
         .update(updateData)
         .eq('organization_id', member.organization_id)
         .eq('name', 'default')
         .select()
         .single();
     } else {
-      // Insert new settings - prompt is required for new records
-      if (!prompt) {
-        return NextResponse.json({ error: 'Prompt is required for new agent settings' }, { status: 400 });
-      }
-      
+      // Create new configuration
       result = await supabase
-        .from('agent_settings')
-        .insert({
-          organization_id: member.organization_id,
-          name: 'default',
-          display_name: display_name || 'AI Assistant',
-          prompt,
-          greeting: greeting || null,
-          language: language || 'en',
-          temperature: temperature || 0.7,
-          max_tokens: max_tokens || 150,
-          phone_call_enabled: phone_call_enabled !== undefined ? phone_call_enabled : true,
-          email_enabled: email_enabled !== undefined ? email_enabled : false,
-          sms_enabled: sms_enabled !== undefined ? sms_enabled : false,
-          created_by: user.id
-        })
+        .from('agent_configurations')
+        .insert(agentData)
         .select()
         .single();
     }

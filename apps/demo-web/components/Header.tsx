@@ -27,6 +27,17 @@ export default async function Header() {
   );
 
   const { data: { user } } = await supabase.auth.getUser();
+  
+  let organizationName = null;
+  if (user) {
+    const { data: membership } = await supabase
+      .from('organization_members')
+      .select('organizations(name)')
+      .eq('user_id', user.id)
+      .single();
+    
+    organizationName = membership?.organizations?.name || null;
+  }
 
   return (
     <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -40,7 +51,7 @@ export default async function Header() {
           </Link>
         </div>
         {user && (
-          <UserDropdownMenu email={user.email!} />
+          <UserDropdownMenu email={user.email!} organizationName={organizationName} />
         )}
       </div>
     </header>

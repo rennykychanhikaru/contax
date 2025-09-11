@@ -1,10 +1,8 @@
 {
-  "/api/settings/twilio/route": "app/api/settings/twilio/route.js",
-  "/api/calendar/status/route": "app/api/calendar/status/route.js",
-  "/api/calendar/list/route": "app/api/calendar/list/route.js",
   "/api/agents/default/route": "app/api/agents/default/route.js",
   "/api/org/default/route": "app/api/org/default/route.js",
-  "/api/realtime/token/route": "app/api/realtime/token/route.js",
-  "/settings/page": "app/settings/page.js",
+  "/api/calendar/list/route": "app/api/calendar/list/route.js",
+  "/api/calendar/status/route": "app/api/calendar/status/route.js",
+  "/agent-settings/page": "app/agent-settings/page.js",
   "/(home)/page": "app/(home)/page.js"
 }

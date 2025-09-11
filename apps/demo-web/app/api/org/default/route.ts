@@ -1,20 +1,67 @@
-import { NextRequest } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { NextRequest, NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
+import { createServerClient } from '@supabase/ssr'
 
 export async function GET(_req: NextRequest) {
-  const supabaseUrl = process.env.SUPABASE_URL
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY
-  if (!supabaseUrl || !supabaseKey) {
-    return new Response(JSON.stringify({ error: 'Missing Supabase env' }), { status: 500 })
+  const cookieStore = await cookies()
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll()
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options)
+            })
+          } catch (error) {
+            console.error('Error setting cookies:', error)
+          }
+        },
+      },
+    }
+  )
+
+  // Get authenticated user
+  const { data: { user } } = await supabase.auth.getUser()
+  
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  const supabase = createClient(supabaseUrl, supabaseKey)
-  const { data, error } = await supabase.from('organizations').select('id, name').limit(1)
-  if (error || !data?.length) {
-    return new Response(JSON.stringify({ error: 'No organizations found' }), { status: 404 })
+
+  try {
+    // Get user's default organization through the membership table
+    const { data: membership, error: memberError } = await supabase
+      .from('organization_members')
+      .select('organization_id, organizations(id, name)')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .single()
+
+    if (memberError || !membership) {
+      // If no organization exists, this shouldn't happen after migration
+      // but we'll handle it gracefully
+      return NextResponse.json({ 
+        error: 'No organization found for user. Please contact support.' 
+      }, { status: 404 })
+    }
+
+    // Return the organization
+    return NextResponse.json({ 
+      organization: membership.organizations 
+    }, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  } catch (error) {
+    console.error('Error fetching user organization:', error)
+    return NextResponse.json({ 
+      error: 'Failed to fetch organization' 
+    }, { status: 500 })
   }
-  return new Response(JSON.stringify({ organization: data[0] }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' }
-  })
 }
 

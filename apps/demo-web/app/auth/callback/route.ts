@@ -29,7 +29,26 @@ export async function GET(request: Request) {
       }
     );
 
-    await supabase.auth.exchangeCodeForSession(code);
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    
+    if (!error) {
+      // Get the user to check if they need onboarding
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (user) {
+        // Check if user has an organization
+        const { data: membership } = await supabase
+          .from('organization_members')
+          .select('organization_id')
+          .eq('user_id', user.id)
+          .single();
+        
+        if (!membership) {
+          // User needs onboarding to create organization
+          return NextResponse.redirect(new URL('/onboarding', requestUrl.origin));
+        }
+      }
+    }
   }
 
   return NextResponse.redirect(new URL('/', requestUrl.origin));

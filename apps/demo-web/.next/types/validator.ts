@@ -71,6 +71,12 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   handler satisfies AppPageConfig<"/auth/sign-up">
 }
 
+// Validate ../../app/onboarding/page.tsx
+{
+  const handler = {} as typeof import("../../app/onboarding/page.js")
+  handler satisfies AppPageConfig<"/onboarding">
+}
+
 // Validate ../../app/settings/page.tsx
 {
   const handler = {} as typeof import("../../app/settings/page.js")
@@ -137,6 +143,12 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   handler satisfies RouteHandlerConfig<"/api/google/oauth/start">
 }
 
+// Validate ../../app/api/onboarding/route.ts
+{
+  const handler = {} as typeof import("../../app/api/onboarding/route.js")
+  handler satisfies RouteHandlerConfig<"/api/onboarding">
+}
+
 // Validate ../../app/api/org/default/route.ts
 {
   const handler = {} as typeof import("../../app/api/org/default/route.js")
@@ -173,10 +185,28 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   handler satisfies RouteHandlerConfig<"/api/webhook/[userId]/[token]">
 }
 
+// Validate ../../app/api/webhook/agent/[token]/trigger/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/agent/[token]/trigger/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/agent/[token]/trigger">
+}
+
+// Validate ../../app/api/webhook/agent/[token]/twiml/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/agent/[token]/twiml/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/agent/[token]/twiml">
+}
+
 // Validate ../../app/api/webhook/call-status/route.ts
 {
   const handler = {} as typeof import("../../app/api/webhook/call-status/route.js")
   handler satisfies RouteHandlerConfig<"/api/webhook/call-status">
+}
+
+// Validate ../../app/api/webhook/org/[token]/trigger-call/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/org/[token]/trigger-call/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/org/[token]/trigger-call">
 }
 
 // Validate ../../app/api/webhook/outgoing-call/route.ts

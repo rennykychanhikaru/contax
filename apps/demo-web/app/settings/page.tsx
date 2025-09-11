@@ -2,7 +2,6 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { redirect } from 'next/navigation';
 import TwilioIntegrationForm from './TwilioIntegrationForm';
-import WebhookGenerator from './WebhookGenerator';
 import CalendarSettings from './CalendarSettings';
 import Header from '../../components/Header';
 import { OutgoingCallTrigger } from '../../components/OutgoingCallTrigger';
@@ -49,14 +48,6 @@ export default async function SettingsPage() {
 
           <div className="space-y-6">
             <CalendarSettings userId={user.id} />
-            
-            <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
-              <h3 className="text-lg font-semibold mb-4 text-white">Webhook URL</h3>
-              <p className="text-sm text-gray-400 mb-4">
-                Generate a unique webhook URL to receive real-time notifications when calendar events are created or updated.
-              </p>
-              <WebhookGenerator userId={user.id} />
-            </section>
 
             <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
               <h3 className="text-lg font-semibold mb-4 text-white">Twilio Integration</h3>

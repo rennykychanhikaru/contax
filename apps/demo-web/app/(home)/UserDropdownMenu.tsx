@@ -8,9 +8,10 @@ import Link from 'next/link';
 
 interface UserDropdownMenuProps {
   email: string;
+  organizationName: string | null;
 }
 
-export default function UserDropdownMenu({ email }: UserDropdownMenuProps) {
+export default function UserDropdownMenu({ email, organizationName }: UserDropdownMenuProps) {
   const router = useRouter();
   
   const handleSignOut = async () => {
@@ -38,6 +39,14 @@ export default function UserDropdownMenu({ email }: UserDropdownMenuProps) {
           sideOffset={5}
           align="end"
         >
+          {organizationName && (
+            <>
+              <div className="px-3 py-2 border-b border-gray-700">
+                <div className="text-xs text-gray-500 mb-1">Organization</div>
+                <div className="text-sm font-medium text-gray-200">{organizationName}</div>
+              </div>
+            </>
+          )}
           <DropdownMenu.Item className="outline-none">
             <Link 
               href="/settings" 

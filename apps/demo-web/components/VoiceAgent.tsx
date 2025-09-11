@@ -431,22 +431,6 @@ function OrgBar({
       <CardContent className="space-y-3">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div>
-            <Label className="font-medium">Organization:</Label>
-            <div className="mt-1">
-              {org ? (
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">{org.name}</Badge>
-                  <code className="text-xs text-muted-foreground">({org.id})</code>
-                </div>
-              ) : (
-                <div className="text-muted-foreground">
-                  Loading…{' '}
-                  <span className="text-xs">(if this persists, paste an Organization ID below)</span>
-                </div>
-              )}
-            </div>
-          </div>
-          <div>
             <Label className="font-medium">Calendar:</Label>
             <div className="mt-1">
               <code className="text-sm bg-muted px-2 py-1 rounded">{calendarId}</code>

@@ -187,29 +187,24 @@ export function VoiceAgentStyled({
       {/* Header Card */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Phone className="h-5 w-5" />
-            {agentName}
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Phone className="h-5 w-5" />
+              {agentName}
+            </CardTitle>
+            {/* Timezone Badge aligned with title */}
+            {calendarTz && (
+              <Badge variant="secondary" className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {calendarTz}
+              </Badge>
+            )}
+          </div>
           <CardDescription>
             AI-powered voice agent for calendar management
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Organization & Timezone Info */}
-          {org && (
-            <Alert>
-              <AlertDescription className="flex items-center justify-between">
-                <span><strong>Organization:</strong> {org.name}</span>
-                {calendarTz && (
-                  <Badge variant="secondary" className="flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    {calendarTz}
-                  </Badge>
-                )}
-              </AlertDescription>
-            </Alert>
-          )}
 
 
           {/* Action Buttons */}

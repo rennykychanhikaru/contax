@@ -5,7 +5,14 @@ import { Button } from '../../components/ui/button';
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import { Loader2, Save, RotateCcw } from 'lucide-react';
+import { Loader2, Save, RotateCcw, Copy, CheckCircle, Info } from 'lucide-react';
+import { Switch } from '../../components/ui/switch';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '../../components/ui/tooltip';
 
 interface AgentSettingsFormProps {
   userId: string;
@@ -27,8 +34,11 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
   const [displayName, setDisplayName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [greeting, setGreeting] = useState('');
+  const [webhookEnabled, setWebhookEnabled] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
@@ -37,18 +47,17 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
       setIsLoading(true);
       try {
         const response = await fetch('/api/agents/default');
-        if (response.ok) {
-          const data = await response.json();
-          if (data.agent) {
-            setDisplayName(data.agent.display_name || DEFAULT_NAME);
-            setPrompt(data.agent.prompt || DEFAULT_PROMPT);
-            setGreeting(data.agent.greeting || DEFAULT_GREETING);
-          } else {
-            setDisplayName(DEFAULT_NAME);
-            setPrompt(DEFAULT_PROMPT);
-            setGreeting(DEFAULT_GREETING);
-          }
+        const data = await response.json();
+        
+        if (response.ok && data.agent) {
+          console.log('Loaded agent settings:', data.agent);
+          setDisplayName(data.agent.display_name || DEFAULT_NAME);
+          setPrompt(data.agent.prompt || DEFAULT_PROMPT);
+          setGreeting(data.agent.greeting || DEFAULT_GREETING);
+          setWebhookEnabled(data.agent.webhook_enabled || false);
+          setWebhookUrl(data.agent.webhook_url || '');
         } else {
+          console.error('Failed to load agent settings:', data.error || 'No agent found');
           // If no settings exist, use default
           setDisplayName(DEFAULT_NAME);
           setPrompt(DEFAULT_PROMPT);
@@ -80,7 +89,8 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
         body: JSON.stringify({ 
           display_name: displayName, 
           prompt, 
-          greeting
+          greeting,
+          webhook_enabled: webhookEnabled
         }),
       });
 
@@ -114,6 +124,7 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
   }
 
   return (
+    <TooltipProvider>
     <div className="space-y-4">
       <div>
         <Label htmlFor="agent-name">Agent Name</Label>
@@ -132,7 +143,28 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
       </div>
 
       <div>
-        <Label htmlFor="agent-prompt">Agent Prompt</Label>
+        <div className="flex items-center gap-2 mb-1">
+          <Label htmlFor="agent-prompt">Agent Prompt</Label>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" className="text-gray-400 hover:text-gray-300 transition-colors">
+                <Info className="h-4 w-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-xs">
+              <div className="space-y-2 text-sm">
+                <p className="font-medium">Tips for writing prompts:</p>
+                <ul className="list-disc list-inside space-y-1">
+                  <li>Be clear about what the agent can and cannot do</li>
+                  <li>Include your business name and context</li>
+                  <li>Specify the tone (professional, friendly, formal, etc.)</li>
+                  <li>List the main tasks the agent should handle</li>
+                  <li>Add any specific instructions or limitations</li>
+                </ul>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        </div>
         <p className="text-sm text-gray-500 mb-2">
           Define how your agent should behave and what it can help callers with.
         </p>
@@ -159,6 +191,63 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
           className="min-h-[100px] font-mono text-sm"
           disabled={isSaving}
         />
+      </div>
+
+      <div className="space-y-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+        <div className="flex items-center justify-between">
+          <div>
+            <Label htmlFor="webhook-enabled">Webhook Integration</Label>
+            <p className="text-sm text-gray-500">
+              Enable webhook to trigger calls via external services (Make, Zapier, etc.)
+            </p>
+          </div>
+          <Switch
+            id="webhook-enabled"
+            checked={webhookEnabled}
+            onCheckedChange={setWebhookEnabled}
+            disabled={isSaving}
+          />
+        </div>
+
+        {webhookEnabled && webhookUrl && (
+          <div className="space-y-2">
+            <Label>Webhook URL</Label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={webhookUrl}
+                readOnly
+                className="flex-1 px-3 py-2 bg-gray-900 border border-gray-600 rounded-md text-gray-300 font-mono text-sm"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  navigator.clipboard.writeText(webhookUrl);
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+                className="flex items-center gap-2"
+              >
+                {copied ? (
+                  <>
+                    <CheckCircle className="h-4 w-4" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-4 w-4" />
+                    Copy
+                  </>
+                )}
+              </Button>
+            </div>
+            <p className="text-xs text-gray-500">
+              Send a POST request to this URL with phone number to trigger a call
+            </p>
+          </div>
+        )}
       </div>
 
       {message && (
@@ -198,17 +287,7 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
           Reset to Default
         </Button>
       </div>
-
-      <div className="mt-6 p-4 bg-gray-800/50 rounded-lg">
-        <h4 className="text-sm font-medium text-gray-300 mb-2">Tips for writing prompts:</h4>
-        <ul className="text-sm text-gray-400 space-y-1 list-disc list-inside">
-          <li>Be clear about what the agent can and cannot do</li>
-          <li>Include your business name and context</li>
-          <li>Specify the tone (professional, friendly, formal, etc.)</li>
-          <li>List the main tasks the agent should handle</li>
-          <li>Add any specific instructions or limitations</li>
-        </ul>
-      </div>
     </div>
+    </TooltipProvider>
   );
 }
