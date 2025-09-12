@@ -26,12 +26,18 @@ export function VoiceAgentStyled({
   systemPrompt = '',
   greeting = 'Hi, how can I help?',
   language = 'en',
-  agentName = 'Voice Scheduling Assistant'
+  agentName = 'Voice Scheduling Assistant',
+  organizationName,
+  isDemo = false,
+  agentDescription
 }: {
   systemPrompt?: string
   greeting?: string
   language?: string
   agentName?: string
+  organizationName?: string
+  isDemo?: boolean
+  agentDescription?: string
 }) {
   const [connected, setConnected] = useState(false)
   const [transcript, setTranscript] = useState<string[]>([])
@@ -191,6 +197,11 @@ export function VoiceAgentStyled({
             <CardTitle className="flex items-center gap-2">
               <Phone className="h-5 w-5" />
               {agentName}
+              {isDemo && (
+                <Badge variant="outline" className="text-xs ml-2">
+                  DEMO
+                </Badge>
+              )}
             </CardTitle>
             {/* Timezone Badge aligned with title */}
             {calendarTz && (
@@ -201,7 +212,7 @@ export function VoiceAgentStyled({
             )}
           </div>
           <CardDescription>
-            AI-powered voice agent for calendar management
+            {isDemo && agentDescription ? agentDescription : 'AI-powered voice agent for calendar management'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -212,7 +223,7 @@ export function VoiceAgentStyled({
             {!connected ? (
               <Button onClick={start} className="flex items-center gap-2">
                 <Mic className="h-4 w-4" />
-                Call Renny's Office
+                Call {organizationName ? `${organizationName}'s` : "the"} Office
               </Button>
             ) : (
               <Button onClick={stop} variant="destructive" className="flex items-center gap-2">

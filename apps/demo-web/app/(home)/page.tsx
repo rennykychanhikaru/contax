@@ -13,11 +13,19 @@ interface AgentConfig {
   language?: string
   temperature?: number
   max_tokens?: number
+  is_demo?: boolean
+  agent_type?: string
+}
+
+interface Organization {
+  id: string
+  name: string
 }
 
 export default function Page() {
   const [loading, setLoading] = useState(true)
   const [agent, setAgent] = useState<AgentConfig | null>(null)
+  const [organization, setOrganization] = useState<Organization | null>(null)
 
   useEffect(() => {
     fetchDefaultAgent()
@@ -30,6 +38,9 @@ export default function Page() {
         const data = await res.json()
         if (data.agent) {
           setAgent(data.agent)
+        }
+        if (data.organization) {
+          setOrganization(data.organization)
         }
       }
     } catch (error) {
@@ -57,6 +68,9 @@ export default function Page() {
         greeting={agent?.greeting || ''} 
         language={agent?.language || "en-US"}
         agentName={agent?.display_name || 'Voice Scheduling Assistant'}
+        organizationName={organization?.name}
+        isDemo={agent?.is_demo}
+        agentDescription={agent?.description}
       />
     </main>
   )
