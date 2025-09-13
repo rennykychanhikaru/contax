@@ -58,7 +58,7 @@ function getClientIp(req: NextRequest): string {
   if (clientIp) return clientIp
   
   // Fallback to remote address (may not be available in some environments)
-  return req.ip || '0.0.0.0'
+  return '0.0.0.0'
 }
 
 /**

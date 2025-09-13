@@ -23,6 +23,7 @@ type GCalendar = {
 }
 
 export function VoiceAgentStyled({
+  agentId,
   systemPrompt = '',
   greeting = 'Hi, how can I help?',
   language = 'en',
@@ -31,6 +32,7 @@ export function VoiceAgentStyled({
   isDemo = false,
   agentDescription
 }: {
+  agentId?: string
   systemPrompt?: string
   greeting?: string
   language?: string
@@ -94,40 +96,47 @@ export function VoiceAgentStyled({
       .then((j) => j.organization && setOrg(j.organization))
       .catch(() => {})
     
-    fetch('/api/calendar/status')
-      .then((r) => r.json())
-      .then((j) => setCalendarTz(j.accountTimeZone || j.primaryTimeZone || null))
-      .catch(() => {})
+    // Only fetch calendar status if we have an agent ID
+    if (agentId) {
+      fetch(`/api/agents/${agentId}/calendar/status`)
+        .then((r) => r.json())
+        .then((j) => setCalendarTz(j.accountTimeZone || j.primaryTimeZone || null))
+        .catch(() => {})
+    }
     
-    fetch('/api/calendar/list')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((j) => {
-        if (!j?.calendars) return
-        setCalendars(j.calendars)
-        const defaults = j.calendars.filter((c: any) => c.selected || c.primary).map((c: any) => c.id)
-        const sel = defaults.length ? defaults : j.calendars.map((c: any) => c.id)
-        const nextSel = selectedCalIds.length ? selectedCalIds : sel
-        setSelectedCalIds(nextSel)
-        agentRef.current?.setCalendarIds(useUnion ? nextSel : [calendarId])
-        const primary = j.calendars.find((c: any) => c.primary) || j.calendars[0]
-        if (primary) {
-          setCalendarId(primary.id)
-          if (primary.timeZone) setCalendarTz(primary.timeZone)
-        }
-      })
-      .catch(() => {})
+    // Only fetch calendar list if we have an agent ID
+    if (agentId) {
+      fetch(`/api/agents/${agentId}/calendar/list`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (!j?.calendars) return
+          setCalendars(j.calendars)
+          const defaults = j.calendars.filter((c: any) => c.selected || c.primary).map((c: any) => c.id)
+          const sel = defaults.length ? defaults : j.calendars.map((c: any) => c.id)
+          const nextSel = selectedCalIds.length ? selectedCalIds : sel
+          setSelectedCalIds(nextSel)
+          agentRef.current?.setCalendarIds(useUnion ? nextSel : [calendarId])
+          const primary = j.calendars.find((c: any) => c.primary) || j.calendars[0]
+          if (primary) {
+            setCalendarId(primary.id)
+            if (primary.timeZone) setCalendarTz(primary.timeZone)
+          }
+        })
+        .catch(() => {})
+    }
 
     return () => {
       agentRef.current?.disconnect().catch(() => {})
       agentRef.current = null
     }
-  }, [])
+  }, [agentId])
 
   async function start() {
     try {
       agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
       await agentRef.current!.connect(systemPrompt, {
         organizationId: org?.id,
+        agentId,
         calendarId,
         greeting,
         language,

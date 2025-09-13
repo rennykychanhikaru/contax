@@ -39,7 +39,7 @@ const TriggerCallSchema = z.object({
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
   const startTime = Date.now()
   
@@ -61,7 +61,7 @@ export async function POST(
       return NextResponse.json(
         { 
           error: 'Validation failed',
-          details: validation.error.errors.map(e => ({
+          details: validation.error.issues.map(e => ({
             field: e.path.join('.'),
             message: e.message
           }))
@@ -72,8 +72,8 @@ export async function POST(
     
     const validatedData = validation.data
     
-    // Extract webhook token from URL
-    const webhookToken = params.token
+    // Extract webhook token from URL  
+    const webhookToken = (await params).token
     
     // Validate webhook request (handles auth, rate limiting, logging)
     const validationResult = await validateWebhookRequest(

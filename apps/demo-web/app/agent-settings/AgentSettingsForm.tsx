@@ -1,12 +1,23 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Button } from '../../components/ui/button';
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import { Loader2, Save, RotateCcw, Copy, CheckCircle, Info } from 'lucide-react';
+import { Loader2, Save, RotateCcw, Copy, CheckCircle, Info, Calendar, RefreshCw, Unlink } from 'lucide-react';
 import { Switch } from '../../components/ui/switch';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
+import { Badge } from '../../components/ui/badge';
+import { createBrowserClient } from '@supabase/ssr';
+
+function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
 import {
   Tooltip,
   TooltipContent,
@@ -30,7 +41,19 @@ const DEFAULT_GREETING = `Hi! Thanks for calling. I'm your AI assistant. How can
 
 const DEFAULT_NAME = 'AI Assistant';
 
+interface CalendarStatus {
+  connected: boolean;
+  email: string | null;
+  calendarId: string | null;
+  calendars: Array<{ id: string; summary: string; primary?: boolean }>;
+  error: string | null;
+  lastSync?: string;
+  connectedAt?: string;
+}
+
 export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
+  const searchParams = useSearchParams();
+  const [agentId, setAgentId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [greeting, setGreeting] = useState('');
@@ -39,6 +62,8 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [calendarStatus, setCalendarStatus] = useState<CalendarStatus | null>(null);
+  const [checkingCalendar, setCheckingCalendar] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
@@ -51,6 +76,7 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
         
         if (response.ok && data.agent) {
           console.log('Loaded agent settings:', data.agent);
+          setAgentId(data.agent.id || null);
           setDisplayName(data.agent.display_name || DEFAULT_NAME);
           setPrompt(data.agent.prompt || DEFAULT_PROMPT);
           setGreeting(data.agent.greeting || DEFAULT_GREETING);
@@ -75,6 +101,77 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
 
     fetchSettings();
   }, []);
+
+  useEffect(() => {
+    if (agentId) {
+      checkCalendarStatus();
+    }
+  }, [agentId]);
+
+  // Check for OAuth success/error messages in URL
+  useEffect(() => {
+    const success = searchParams.get('success');
+    const error = searchParams.get('error');
+    const returnedAgentId = searchParams.get('agent_id');
+    
+    if (success) {
+      // Don't show the message, just refresh the calendar status
+      // Refresh calendar status after successful connection
+      if (returnedAgentId || agentId) {
+        setTimeout(() => {
+          checkCalendarStatus();
+        }, 500);
+      }
+      // Clear URL params after handling
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (error) {
+      setMessage({ type: 'error', text: error });
+      // Clear URL params after handling
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [searchParams, agentId]);
+
+  const checkCalendarStatus = async () => {
+    if (!agentId) return;
+    
+    setCheckingCalendar(true);
+    try {
+      const res = await fetch(`/api/agents/${agentId}/calendar/status`);
+      if (res.ok) {
+        const status = await res.json();
+        setCalendarStatus(status);
+      }
+    } catch (error) {
+      console.error('Failed to check calendar status:', error);
+    } finally {
+      setCheckingCalendar(false);
+    }
+  };
+
+  const handleConnectCalendar = () => {
+    if (!agentId) return;
+    window.location.href = `/api/agents/${agentId}/calendar/oauth/start?redirect=${encodeURIComponent('/agent-settings')}`;
+  };
+
+  const handleDisconnectCalendar = async () => {
+    if (!agentId || !confirm('Are you sure you want to disconnect your Google Calendar?')) return;
+    
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.rpc('disconnect_agent_google_calendar', {
+        p_agent_id: agentId
+      });
+      
+      if (error) throw error;
+      
+      setCalendarStatus(null);
+      // Don't show message, just refresh status
+      await checkCalendarStatus();
+    } catch (error) {
+      console.error('Error disconnecting calendar:', error);
+      setMessage({ type: 'error', text: 'Failed to disconnect calendar' });
+    }
+  };
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -249,6 +346,99 @@ export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
           </div>
         )}
       </div>
+
+      {/* Calendar Integration Section */}
+      <Card className="bg-gray-800/50 border-gray-700">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-white">
+            <Calendar className="h-5 w-5" />
+            Google Calendar Integration
+          </CardTitle>
+          <CardDescription className="text-gray-400">
+            Connect your Google Calendar to enable scheduling and availability checking
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {checkingCalendar ? (
+            <div className="flex items-center gap-2 text-sm text-gray-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Checking calendar status...
+            </div>
+          ) : calendarStatus?.connected ? (
+            <>
+              <div className="flex items-center justify-between p-4 bg-green-900/20 rounded-lg border border-green-700">
+                <div className="flex items-center gap-3">
+                  <CheckCircle className="h-5 w-5 text-green-400" />
+                  <div>
+                    <p className="font-medium text-green-400">Calendar Connected</p>
+                    <p className="text-sm text-gray-300">{calendarStatus.email}</p>
+                    {calendarStatus.connectedAt && (
+                      <p className="text-xs text-gray-400">
+                        Connected {new Date(calendarStatus.connectedAt).toLocaleDateString()}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={checkCalendarStatus}
+                    className="text-gray-300 border-gray-600 hover:bg-gray-700"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Refresh
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDisconnectCalendar}
+                    className="text-red-400 hover:text-red-300 border-red-900 hover:bg-red-950"
+                  >
+                    <Unlink className="h-4 w-4 mr-1" />
+                    Disconnect
+                  </Button>
+                </div>
+              </div>
+
+              {calendarStatus.calendars && calendarStatus.calendars.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-gray-300">Available Calendars</Label>
+                  <div className="space-y-1">
+                    {calendarStatus.calendars.map((cal) => (
+                      <div key={cal.id} className="flex items-center gap-2 text-sm text-gray-400">
+                        <span>{cal.summary}</span>
+                        {cal.primary && (
+                          <Badge variant="secondary" className="text-xs">Primary</Badge>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex items-center justify-between p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+              <div className="flex items-center gap-3">
+                <Calendar className="h-5 w-5 text-gray-500" />
+                <div>
+                  <p className="font-medium text-white">No Calendar Connected</p>
+                  <p className="text-sm text-gray-400">Connect your Google Calendar to enable scheduling</p>
+                </div>
+              </div>
+              <Button
+                type="button"
+                onClick={handleConnectCalendar}
+                disabled={!agentId}
+              >
+                Connect Calendar
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {message && (
         <Alert className={message.type === 'success' ? 'border-green-600' : 'border-red-600'}>

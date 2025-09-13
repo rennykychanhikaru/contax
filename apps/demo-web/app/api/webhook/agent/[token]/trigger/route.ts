@@ -4,10 +4,10 @@ import twilio from 'twilio';
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
   try {
-    const { token } = params;
+    const { token } = await params;
     
     if (!token) {
       return NextResponse.json({ error: 'Token is required' }, { status: 400 });
@@ -122,9 +122,9 @@ export async function POST(
 // GET endpoint to show webhook info
 export async function GET(
   req: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
-  const { token } = params;
+  const { token } = await params;
   
   return NextResponse.json({
     message: 'Agent webhook endpoint',

@@ -5,6 +5,7 @@ import { VoiceAgentStyled } from '../../components/VoiceAgentStyled'
 import { Loader2 } from 'lucide-react'
 
 interface AgentConfig {
+  id: string
   name: string
   display_name?: string
   description?: string
@@ -64,6 +65,7 @@ export default function Page() {
   return (
     <main className="container max-w-6xl mx-auto p-6">
       <VoiceAgentStyled 
+        agentId={agent?.id}
         systemPrompt={agent?.prompt || ''} 
         greeting={agent?.greeting || ''} 
         language={agent?.language || "en-US"}

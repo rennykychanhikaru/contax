@@ -24,6 +24,7 @@
     ],
     "baseUrl": ".",
     "paths": {
+      "@/*": ["./*"],
       "@kit/ui/button": ["../../next-supabase-saas-kit-turbo/packages/ui/src/shadcn/button.tsx"],
       "@kit/ui/card": ["../../next-supabase-saas-kit-turbo/packages/ui/src/shadcn/card.tsx"],
       "@kit/ui/checkbox": ["../../next-supabase-saas-kit-turbo/packages/ui/src/shadcn/checkbox.tsx"],

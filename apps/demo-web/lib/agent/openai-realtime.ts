@@ -17,6 +17,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private pendingMessages: any[] = []
   private defaultOrgId: string | undefined
   private defaultCalendarId: string | undefined
+  private defaultAgentId: string | undefined
   private toolHintSent = false
   private onToolEvent?: (e: ToolEvent) => void
   private onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
@@ -70,7 +71,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         if (!parsed) return
         const organizationId = this.defaultOrgId
         const calendarId = this.defaultCalendarId
-        fetch('/api/calendar/check-availability', {
+        const agentId = this.defaultAgentId
+        const apiUrl = agentId ? `/api/agents/${agentId}/calendar/check-availability` : '/api/calendar/check-availability'
+        fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ organizationId, start: parsed.start, end: parsed.end, calendarId, calendarIds: this.calendarIds })
@@ -82,7 +85,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
               this.speak(`That time is available: ${this.fmtRange(j.start || parsed.start, j.end || parsed.end, j.timeZone || this.tz)}. Should I book it?`)
             } else if (ok && j?.available === false) {
               const date = (j.start || parsed.start).slice(0, 10)
-              fetch('/api/calendar/slots', {
+              const slotsApiUrl = agentId ? `/api/agents/${agentId}/calendar/slots` : '/api/calendar/slots'
+              fetch(slotsApiUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ date, slotMinutes: 60, calendarIds: this.calendarIds })
@@ -172,7 +176,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
   async connect(
     systemPrompt: string,
-    opts?: { organizationId?: string; calendarId?: string; greeting?: string; language?: string; timeZone?: string }
+    opts?: { organizationId?: string; agentId?: string; calendarId?: string; greeting?: string; language?: string; timeZone?: string }
   ): Promise<void> {
     const session = await fetch('/api/realtime/token', {
       method: 'POST',
@@ -193,6 +197,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
     this.defaultOrgId = opts?.organizationId
     this.defaultCalendarId = opts?.calendarId || 'primary'
+    this.defaultAgentId = opts?.agentId
     this.tz = opts?.timeZone
 
     const pc = new RTCPeerConnection()
@@ -421,7 +426,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           return
         }
         const res = await (async () => {
-          const r = await fetch('/api/calendar/check-availability', {
+          const agentId = this.defaultAgentId
+          const apiUrl = agentId ? `/api/agents/${agentId}/calendar/check-availability` : '/api/calendar/check-availability'
+          const r = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ organizationId, start: args.start, end: args.end, calendarId, calendarIds: this.calendarIds })
@@ -457,7 +464,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
             
             // Get alternative slots for the same day
             const date = (requestedStart as string).slice(0, 10)
-            const r2 = await fetch('/api/calendar/slots', {
+            const agentId = this.defaultAgentId
+            const slotsApiUrl = agentId ? `/api/agents/${agentId}/calendar/slots` : '/api/calendar/slots'
+            const r2 = await fetch(slotsApiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ date, slotMinutes: 60, calendarIds: this.calendarIds })
@@ -488,7 +497,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           return
         }
         const res = await (async () => {
-          const r = await fetch('/api/appointments/book', {
+          const agentId = this.defaultAgentId
+          const apiUrl = agentId ? `/api/agents/${agentId}/appointments/book` : '/api/appointments/book'
+          const r = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ organizationId, customer: args.customer, start: args.start, end: args.end, notes: args.notes, calendarId })
@@ -523,7 +534,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       } else if (effective === 'getAvailableSlots') {
         const organizationId = args.organizationId || this.defaultOrgId
         const res = await (async () => {
-          const r = await fetch('/api/calendar/slots', {
+          const agentId = this.defaultAgentId
+          const apiUrl = agentId ? `/api/agents/${agentId}/calendar/slots` : '/api/calendar/slots'
+          const r = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

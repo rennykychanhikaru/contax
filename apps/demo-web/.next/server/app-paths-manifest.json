@@ -1,14 +1,3 @@
 {
-  "/api/onboarding/route": "app/api/onboarding/route.js",
-  "/api/agents/default/route": "app/api/agents/default/route.js",
-  "/api/org/default/route": "app/api/org/default/route.js",
-  "/api/calendar/status/route": "app/api/calendar/status/route.js",
-  "/api/calendar/list/route": "app/api/calendar/list/route.js",
-  "/api/settings/twilio/route": "app/api/settings/twilio/route.js",
-  "/onboarding/page": "app/onboarding/page.js",
-  "/agent-settings/page": "app/agent-settings/page.js",
-  "/settings/page": "app/settings/page.js",
-  "/auth/sign-in/page": "app/auth/sign-in/page.js",
-  "/auth/sign-up/page": "app/auth/sign-up/page.js",
-  "/(home)/page": "app/(home)/page.js"
+  "/auth/sign-in/page": "app/auth/sign-in/page.js"
 }

@@ -4,10 +4,10 @@ import twilio from 'twilio';
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { token: string } }
+  { params }: { params: Promise<{ token: string }> }
 ) {
   try {
-    const { token } = params;
+    const { token } = await params;
     const VoiceResponse = twilio.twiml.VoiceResponse;
     const response = new VoiceResponse();
 
@@ -43,7 +43,7 @@ export async function POST(
 
     // Add gather to capture user input
     const gather = response.gather({
-      input: 'speech',
+      input: ['speech'],
       timeout: 5,
       language: agent.language || 'en-US',
       speechTimeout: 'auto',
