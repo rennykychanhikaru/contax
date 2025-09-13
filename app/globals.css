@@ -1,0 +1,295 @@
+/*
+* global.css
+*
+* Global styles for the entire application - Makerkit Integration
+*/
+
+/* Tailwind CSS */
+@import 'tailwindcss';
+
+/* plugins - update the below if you add a new plugin */
+/* Note: tailwindcss-animate is loaded via config in v4 */
+
+/* content sources - update the below if you add a new path */
+@source "../../next-supabase-saas-kit-turbo/packages/*/src/**/*.{ts,tsx}";
+@source "../../next-supabase-saas-kit-turbo/packages/features/*/src/**/*.{ts,tsx}";
+@source "../../next-supabase-saas-kit-turbo/packages/billing/*/src/**/*.{ts,tsx}";
+@source "../../next-supabase-saas-kit-turbo/packages/plugins/*/src/**/*.{ts,tsx}";
+@source "../../next-supabase-saas-kit-turbo/packages/cms/*/src/**/*.{ts,tsx}";
+@source "../{app,components,config,lib}/**/*.{ts,tsx}";
+
+/* variants - update the below if you add a new variant */
+@variant dark (&:where(.dark, .dark *));
+
+/*
+* Shadcn UI theme colors and variables
+*/
+@layer base {
+    :root {
+        --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+        --font-heading: var(--font-sans);
+
+        --background: var(--color-white);
+        --foreground: var(--color-neutral-950);
+
+        --card: var(--color-white);
+        --card-foreground: var(--color-neutral-950);
+
+        --popover: var(--color-white);
+        --popover-foreground: var(--color-neutral-950);
+
+        --primary: var(--color-neutral-950);
+        --primary-foreground: var(--color-white);
+
+        --secondary: oklch(96.76% 0.0013 286.38);
+        --secondary-foreground: oklch(21.03% 0.0318 264.65);
+
+        --muted: oklch(96.71% 0.0029 264.54);
+        --muted-foreground: oklch(55.13% 0.0233 264.36);
+
+        --accent: oklch(96.76% 0.0013 286.38);
+        --accent-foreground: oklch(21.03% 0.0318 264.65);
+
+        --destructive: var(--color-red-500);
+        --destructive-foreground: var(--color-white);
+
+        --border: var(--color-gray-100);
+        --input: var(--color-gray-200);
+        --ring: var(--color-neutral-800);
+
+        --radius: 0.5rem;
+
+        --chart-1: var(--color-orange-400);
+        --chart-2: var(--color-teal-600);
+        --chart-3: var(--color-green-800);
+        --chart-4: var(--color-yellow-200);
+        --chart-5: var(--color-orange-200);
+
+        --sidebar-background: var(--color-neutral-50);
+        --sidebar-foreground: oklch(37.05% 0.012 285.8);
+        --sidebar-primary: var(--color-neutral-950);
+        --sidebar-primary-foreground: var(--color-white);
+        --sidebar-accent: var(--color-neutral-100);
+        --sidebar-accent-foreground: var(--color-neutral-950);
+        --sidebar-border: var(--border);
+        --sidebar-ring: var(--color-blue-500);
+    }
+
+    .dark {
+        --background: var(--color-neutral-900);
+        --foreground: var(--color-white);
+
+        --card: var(--color-neutral-900);
+        --card-foreground: var(--color-white);
+
+        --popover: var(--color-neutral-900);
+        --popover-foreground: var(--color-white);
+
+        --primary: var(--color-white);
+        --primary-foreground: var(--color-neutral-900);
+
+        --secondary: var(--color-neutral-800);
+        --secondary-foreground: oklch(98.43% 0.0017 247.84);
+
+        --muted: var(--color-neutral-800);
+        --muted-foreground: oklch(71.19% 0.0129 286.07);
+
+        --accent: var(--color-neutral-800);
+        --accent-foreground: oklch(98.48% 0 0);
+
+        --destructive: var(--color-red-700);
+        --destructive-foreground: var(--color-white);
+
+        --border: var(--color-neutral-800);
+        --input: var(--color-neutral-700);
+        --ring: oklch(87.09% 0.0055 286.29);
+
+        --chart-1: var(--color-blue-600);
+        --chart-2: var(--color-emerald-400);
+        --chart-3: var(--color-orange-400);
+        --chart-4: var(--color-purple-500);
+        --chart-5: var(--color-pink-500);
+
+        --sidebar-background: var(--color-neutral-900);
+        --sidebar-foreground: var(--color-white);
+        --sidebar-primary: var(--color-blue-500);
+        --sidebar-primary-foreground: var(--color-white);
+        --sidebar-accent: var(--color-neutral-800);
+        --sidebar-accent-foreground: var(--color-white);
+        --sidebar-border: var(--border);
+        --sidebar-ring: var(--color-blue-500);
+    }
+
+    body {
+        @apply bg-background text-foreground;
+        font-feature-settings: "rlig" 1, "calt" 1;
+    }
+
+    *,
+    ::after,
+    ::before,
+    ::backdrop,
+    ::file-selector-button {
+        border-color: var(--border, currentColor);
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+        color: theme(--color-muted-foreground);
+    }
+}
+
+/*
+* Tailwind CSS theme mappings (Tailwind CSS v4 approach)
+*/
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-radius: var(--radius);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  --font-sans: -apple-system, var(--font-sans);
+  --font-heading: var(--font-heading);
+
+  --color-sidebar: var(--sidebar-background);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --animate-fade-up: fade-up 0.5s;
+  --animate-fade-down: fade-down 0.5s;
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+
+  @keyframes accordion-down {
+    from {
+      height: 0;
+    }
+
+    to {
+      height: var(--radix-accordion-content-height);
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+    }
+
+    to {
+      height: 0;
+    }
+  }
+
+  @keyframes fade-up {
+    0% {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    80% {
+      opacity: 0.6;
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0px);
+    }
+  }
+
+  @keyframes fade-down {
+    0% {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    80% {
+      opacity: 0.6;
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0px);
+    }
+  }
+}
+
+/*
+* Container utility
+*/
+@utility container {
+  margin-inline: auto;
+
+  @apply xl:max-w-[80rem] px-4 lg:px-8;
+}
+
+/*
+* Makerkit-specific global styles
+*/
+[data-radix-popper-content-wrapper] {
+    @apply w-full md:w-auto;
+}
+
+[data-radix-menu-content] {
+    @apply rounded-none md:rounded-lg w-full md:w-auto;
+}
+
+[data-radix-menu-content] [role="menuitem"] {
+    @apply md:min-h-0 min-h-12;
+}
+
+.site-header > .container:before,
+.site-footer > .container:before {
+    background: radial-gradient(62.87% 100% at 50% 100%, var(--color-gray-200) 0%, rgba(255, 255, 255, 0) 100%);
+
+    bottom: 0;
+    content: "";
+    height: 1px;
+    left: 0;
+    position: absolute;
+    width: 100%;
+}
+
+.dark .site-header > .container:before,
+.dark .site-footer > .container:before {
+    background: radial-gradient(62.87% 100% at 50% 100%, rgba(255, 255, 255, .10) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.site-footer > .container:before {
+    top: 0;
+}
