@@ -1,168 +1,193 @@
-import { NextRequest } from 'next/server'
-import { cookies } from 'next/headers'
-import { NextResponse } from 'next/server'
-import { refreshGoogleAccessToken, getAccountTimezone } from '../../../../lib/google'
-// No DB usage in Google-only mode
+import { NextRequest, NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { getServiceAccount, refreshGoogleAccessToken } from '@/lib/google';
+import { JWT } from 'google-auth-library';
+import { createServerClient } from '@supabase/ssr';
 
-type Payload = {
-  organizationId?: string
-  start: string // ISO
-  end: string // ISO
-  calendarId?: string // default 'primary'
-  calendarIds?: string[] // optional override list
+interface GoogleEvent {
+  start?: { dateTime?: string; date?: string };
+  end?: { dateTime?: string; date?: string };
 }
 
 export async function POST(req: NextRequest) {
-  const body = (await req.json()) as Payload
-  const { organizationId, start, end, calendarId = 'primary', calendarIds } = body || {}
-  if (!start || !end) {
-    return new Response(JSON.stringify({ error: 'start and end required' }), { status: 400 })
-  }
+  const body = await req.json();
+  const { date, agentId } = body;
 
-  // DB disabled: using Google only
+  const cookieStore = await cookies();
+  // const organizationId = body.organizationId || null; // Commented as not currently used
 
-  let busy = [] as { start: string; end: string }[]
-
-  // Try Google Calendar freebusy if access token is provided
-  const c = await cookies()
-  let gAccessToken = c.get('gcal_access')?.value || c.get('gcal_token')?.value || process.env.GOOGLE_CALENDAR_ACCESS_TOKEN
-  const refreshTok = c.get('gcal_refresh')?.value
-  const expiry = Number(c.get('gcal_expiry')?.value || 0)
-  const nowSec = Math.floor(Date.now() / 1000)
-  const setCookies: { name: string; value: string }[] = []
-  if ((!gAccessToken || (expiry && nowSec >= expiry)) && refreshTok && process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-    const rt = await refreshGoogleAccessToken(refreshTok, process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET)
-    if (rt?.access_token) {
-      gAccessToken = rt.access_token
-      const newExpiry = nowSec + (rt.expires_in || 3600) - 60
-      setCookies.push({ name: 'gcal_access', value: gAccessToken })
-      setCookies.push({ name: 'gcal_expiry', value: String(newExpiry) })
-      setCookies.push({ name: 'gcal_token', value: gAccessToken })
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) => {
+              cookieStore.set(name, value, options);
+            });
+          } catch (error) {
+            console.error('Error setting cookies:', error);
+          }
+        },
+      },
     }
-  }
-  // Resolve organization timezone (for naive datetime coercion)
-  // Do not read org timezone from DB; use Google account timezone
+  );
 
-  // If we have Google token, try to pull primary/selected calendar TZ
-  // Prefer account timezone from Google, then org timezone
-  let accountTz: string | undefined
-  if (gAccessToken) {
-    accountTz = await getAccountTimezone(gAccessToken) || undefined
-  }
-  const baseTz = accountTz
-
-  // Normalize datetimes to RFC3339 with timezone if not provided
-  const normStart = normalizeRfc3339(start, baseTz)
-  const normEnd = normalizeRfc3339(end, baseTz)
-
-  // Guardrail: reject overly broad windows (force day-availability tool)
   try {
-    const ms = Date.parse(normEnd) - Date.parse(normStart)
-    const fourHours = 4 * 60 * 60 * 1000
-    if (ms > fourHours) {
-      const payload = {
-        error: 'broad_window',
-        message: 'Window too large for slot check; use getAvailableSlots instead',
-        start: normStart,
-        end: normEnd,
-        timeZone: baseTz || null
-      }
-      const r = NextResponse.json(payload, { status: 422 })
-      return r
-    }
-  } catch {}
+    let accessToken: string | null = null;
 
-  let gError: string | undefined
-  let usedGoogleCalendars: string[] = []
-  if (gAccessToken) {
-    try {
-      // Determine which calendars to check: explicit list -> selected calendars -> primary
-      let ids = calendarIds && calendarIds.length ? calendarIds : []
-      if (!ids.length) {
-        const cl = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
-          headers: { Authorization: `Bearer ${gAccessToken}` }
-        }).then((r) => (r.ok ? r.json() : null))
-        if (cl?.items?.length) {
-          ids = cl.items
-            .filter((c: any) => (c.selected === true || c.primary === true) && (c.accessRole === 'owner' || c.accessRole === 'writer'))
-            .map((c: any) => c.id)
+    if (agentId) {
+      const { data: agentTokens } = await supabase
+        .from('agent_calendar_tokens')
+        .select('access_token, refresh_token, token_expiry')
+        .eq('agent_id', agentId)
+        .single();
+
+      if (agentTokens) {
+        const needsRefresh = agentTokens.token_expiry && new Date(agentTokens.token_expiry) < new Date();
+
+        if (needsRefresh && agentTokens.refresh_token) {
+          const newToken = await refreshGoogleAccessToken(
+            agentTokens.refresh_token,
+            process.env.GOOGLE_CLIENT_ID!,
+            process.env.GOOGLE_CLIENT_SECRET!
+          );
+
+          if (newToken?.access_token) {
+            accessToken = newToken.access_token;
+
+            await supabase
+              .from('agent_calendar_tokens')
+              .update({
+                access_token: newToken.access_token,
+                token_expiry: new Date(Date.now() + (newToken.expires_in || 3600) * 1000).toISOString()
+              })
+              .eq('agent_id', agentId);
+          }
+        } else {
+          accessToken = agentTokens.access_token;
         }
       }
-      if (!ids.length) ids = [calendarId]
-      usedGoogleCalendars = ids
+    }
 
-      const r = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${gAccessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          timeMin: normStart,
-          timeMax: normEnd,
-          timeZone: baseTz || 'UTC',
-          items: ids.map((id) => ({ id }))
-        })
-      })
-      if (r.ok) {
-        const freebusy = await r.json()
-        if (freebusy?.calendars) {
-          for (const id of ids) {
-            const slots = freebusy.calendars[id]?.busy || []
-            busy = busy.concat(slots)
+    if (!accessToken) {
+      accessToken = cookieStore.get('gcal_access')?.value ||
+                   cookieStore.get('gcal_token')?.value ||
+                   process.env.GOOGLE_CALENDAR_ACCESS_TOKEN || null;
+
+      const refreshToken = cookieStore.get('gcal_refresh')?.value;
+      const expiry = Number(cookieStore.get('gcal_expiry')?.value || 0);
+      const needsRefresh = expiry > 0 && Date.now() > expiry - 60000;
+
+      if (needsRefresh && refreshToken) {
+        const newToken = await refreshGoogleAccessToken(
+          refreshToken,
+          process.env.GOOGLE_CLIENT_ID!,
+          process.env.GOOGLE_CLIENT_SECRET!
+        );
+
+        if (newToken?.access_token) {
+          accessToken = newToken.access_token;
+          cookieStore.set('gcal_access', newToken.access_token, {
+            httpOnly: true,
+            path: '/',
+            maxAge: newToken.expires_in || 3600
+          });
+
+          const newExpiry = Date.now() + (newToken.expires_in || 3600) * 1000;
+          cookieStore.set('gcal_expiry', newExpiry.toString(), {
+            httpOnly: true,
+            path: '/'
+          });
+        }
+      }
+    }
+
+    if (accessToken) {
+      const startOfDay = new Date(date);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(date);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+      url.searchParams.append('timeMin', startOfDay.toISOString());
+      url.searchParams.append('timeMax', endOfDay.toISOString());
+      url.searchParams.append('singleEvents', 'true');
+      url.searchParams.append('orderBy', 'startTime');
+
+      const response = await fetch(url.toString(), {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const events = data.items?.map((event: GoogleEvent) => ({
+          start: event.start?.dateTime || event.start?.date,
+          end: event.end?.dateTime || event.end?.date
+        })) || [];
+
+        const busySlots: Array<{ start: string; end: string }> = [];
+        events.forEach((event: { start?: string; end?: string }) => {
+          if (event.start && event.end) {
+            busySlots.push({ start: event.start, end: event.end });
+          }
+        });
+
+        const availability: Array<{ start: string; end: string }> = [];
+        const workStart = 9;
+        const workEnd = 17;
+
+        for (let hour = workStart; hour < workEnd; hour++) {
+          const slotStart = new Date(date);
+          slotStart.setHours(hour, 0, 0, 0);
+          const slotEnd = new Date(date);
+          slotEnd.setHours(hour + 1, 0, 0, 0);
+
+          const isBusy = busySlots.some(slot => {
+            const busyStart = new Date(slot.start);
+            const busyEnd = new Date(slot.end);
+            return slotStart < busyEnd && slotEnd > busyStart;
+          });
+
+          if (!isBusy) {
+            availability.push({
+              start: slotStart.toISOString(),
+              end: slotEnd.toISOString()
+            });
           }
         }
-      } else {
-        gError = `${r.status} ${await r.text()}`
+
+        return NextResponse.json({ availability, busySlots });
+      } else if (response.status === 401) {
+        return NextResponse.json({ error: 'token_expired' }, { status: 401 });
       }
-    } catch (e: any) {
-      gError = e?.message || 'google freebusy failed'
     }
+
+    const serviceAccount = getServiceAccount();
+    const auth = new JWT({
+      email: serviceAccount.client_email,
+      key: serviceAccount.private_key,
+      scopes: ['https://www.googleapis.com/auth/calendar']
+    });
+
+    const serviceToken = await auth.getAccessToken();
+    if (!serviceToken) {
+      throw new Error('Failed to get service account token');
+    }
+
+    return NextResponse.json({ availability: [], busySlots: [], usingServiceAccount: true });
+  } catch (error) {
+    console.error('Calendar check error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to check availability' },
+      { status: 500 }
+    );
   }
-
-  const hasConflict = busy.length > 0
-  const resp = {
-    available: !hasConflict,
-    conflicts: { google: busy },
-    usedGoogle: !!gAccessToken,
-    googleError: gError,
-    usedGoogleCalendars,
-    start: normStart,
-    end: normEnd,
-    timeZone: baseTz || null
-  }
-  const r = NextResponse.json(resp)
-  setCookies.forEach((kv) => r.cookies.set(kv.name, kv.value, { httpOnly: true, sameSite: 'lax', secure: false, path: '/' }))
-  return r
-}
-
-// Helpers: add timezone offset to naive RFC3339 values using Intl
-function normalizeRfc3339(input: string, timeZone?: string): string {
-  if (!input) return input
-  // Always interpret the wall-clock portion in the provided timezone (if given),
-  // ignoring any incoming offset to avoid ET/UTC mismatches.
-  // 1) Extract YYYY-MM-DDTHH:MM(:SS) and discard any zone suffix.
-  let s = input.trim()
-  s = s.replace(/[zZ]$/,'').replace(/[+-]\d{2}:\d{2}$/,'')
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s)) s += ':00'
-  if (!timeZone) return s + 'Z'
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/)
-  if (!m) return s + 'Z'
-  const y = Number(m[1]); const mo = Number(m[2]); const d = Number(m[3]); const h = Number(m[4]); const mi = Number(m[5]); const se = Number(m[6])
-  const utcProbe = new Date(Date.UTC(y, mo - 1, d, h, mi, se))
-  const offset = tzOffsetString(timeZone, utcProbe)
-  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}${offset}`
-}
-
-function tzOffsetString(timeZone: string, utcDate: Date): string {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    timeZoneName: 'short',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-  })
-  const parts = fmt.formatToParts(utcDate)
-  const tzName = parts.find((p) => p.type === 'timeZoneName')?.value || 'GMT+0'
-  const m = tzName.match(/GMT([+-])(\d{1,2})/)
-  if (!m) return 'Z'
-  const sign = m[1] === '-' ? '-' : '+'
-  const hh = String(Number(m[2])).padStart(2, '0')
-  return `${sign}${hh}:00`
 }

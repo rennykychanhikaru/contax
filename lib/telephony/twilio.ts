@@ -70,7 +70,7 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
 
       this.currentCallSid = call.sid
       // Return void to match interface
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error creating outbound call:', error)
       throw new Error(`Failed to create outbound call: ${error.message}`)
     }
@@ -96,7 +96,7 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       if (sid === this.currentCallSid) {
         this.currentCallSid = null
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error hanging up call:', error)
       throw new Error(`Failed to hang up call: ${error.message}`)
     }

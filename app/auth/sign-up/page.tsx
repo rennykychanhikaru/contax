@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { createBrowserClient } from '@supabase/ssr';
 import pathsConfig from '../../../config/paths.config';
 
@@ -13,7 +12,7 @@ export default function SignUpPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const router = useRouter();
+  // const router = useRouter();
 
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

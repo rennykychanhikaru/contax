@@ -50,7 +50,7 @@ export async function listCalendars(accessToken: string): Promise<Array<{
     })
     if (!r.ok) return null
     const j = await r.json()
-    const items = (j.items || []).map((c: any) => ({
+    const items = (j.items || []).map((c: unknown) => ({
       id: c.id,
       summary: c.summary,
       primary: !!c.primary,
@@ -163,15 +163,15 @@ export async function createCalendarEvent(
     end: { dateTime: string; timeZone?: string };
     attendees?: Array<{ email: string }>;
     location?: string;
-    conferenceData?: any;
+    conferenceData?: unknown;
   },
   calendarId: string = 'primary'
 ): Promise<{
   id?: string;
   htmlLink?: string;
   hangoutLink?: string;
-  start?: any;
-  end?: any;
+  start?: unknown;
+  end?: unknown;
   summary?: string;
   error?: string;
 } | null> {

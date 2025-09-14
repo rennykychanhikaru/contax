@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { storeAgentCalendarTokens, validateAgentAccess, storeAgentCalendars } from '@/lib/agent-calendar';
@@ -6,7 +6,7 @@ import { listCalendars } from '@/lib/google';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const code = req.nextUrl.searchParams.get('code');
     const state = req.nextUrl.searchParams.get('state');

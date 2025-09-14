@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 
 // GET - List all agents for the user's organization
-export async function GET(req: NextRequest) {
+export async function GET() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -246,7 +246,19 @@ export async function PUT(req: NextRequest) {
     }
 
     // Update the agent
-    const updateData: any = {
+    interface UpdateData {
+      updated_by: string;
+      updated_at: string;
+      name?: string;
+      description?: string;
+      system_prompt?: string;
+      greeting_message?: string;
+      voice_settings?: Record<string, unknown>;
+      is_default?: boolean;
+      is_active?: boolean;
+    }
+
+    const updateData: UpdateData = {
       updated_by: user.id,
       updated_at: new Date().toISOString()
     };

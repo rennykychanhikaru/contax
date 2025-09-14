@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Checkbox } from '../../components/ui/checkbox';
 import { Label } from '../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
@@ -17,16 +16,13 @@ type GCalendar = {
   timeZone?: string;
 };
 
-interface CalendarSettingsProps {
-  userId: string;
-}
 
-export default function CalendarSettings({ userId }: CalendarSettingsProps) {
+export default function CalendarSettings() {
   const [calendars, setCalendars] = useState<GCalendar[]>([]);
   const [selectedCalIds, setSelectedCalIds] = useState<string[]>([]);
   const [calendarId, setCalendarId] = useState<string>('primary');
   const [useUnion, setUseUnion] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
 
   useEffect(() => {
     // Load persisted preferences
@@ -37,7 +33,9 @@ export default function CalendarSettings({ userId }: CalendarSettingsProps) {
       if (savedSel) setSelectedCalIds(JSON.parse(savedSel));
       const savedBook = localStorage.getItem('cal_book');
       if (savedBook) setCalendarId(savedBook);
-    } catch {}
+    } catch {
+    // Error handled silently
+  }
 
     // Fetch calendar list
     fetch('/api/calendar/list')
@@ -60,19 +58,25 @@ export default function CalendarSettings({ userId }: CalendarSettingsProps) {
   useEffect(() => {
     try { 
       localStorage.setItem('cal_union', useUnion ? '1' : '0');
-    } catch {}
+    } catch {
+    // Error handled silently
+  }
   }, [useUnion]);
 
   useEffect(() => {
     try { 
       localStorage.setItem('cal_selected', JSON.stringify(selectedCalIds));
-    } catch {}
+    } catch {
+    // Error handled silently
+  }
   }, [selectedCalIds]);
 
   useEffect(() => {
     try { 
       localStorage.setItem('cal_book', calendarId);
-    } catch {}
+    } catch {
+    // Error handled silently
+  }
   }, [calendarId]);
 
   return (

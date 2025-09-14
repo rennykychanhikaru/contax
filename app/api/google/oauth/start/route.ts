@@ -1,6 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 
-export async function GET(_req: NextRequest) {
+export async function GET() {
   const clientId = process.env.GOOGLE_CLIENT_ID
   const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT || 'http://localhost:3000/api/google/oauth/callback'
   const scopes = [

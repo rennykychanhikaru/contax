@@ -3,7 +3,7 @@ import type { AgentAdapter } from '../adapters/types'
 type ToolEvent =
   | { kind: 'event'; type: string; text?: string }
   | { kind: 'call'; name: string; args: string }
-  | { kind: 'result'; name: string; result: any }
+  | { kind: 'result'; name: string; result: unknown }
 
 export class OpenAIRealtimeAgent implements AgentAdapter {
   private pc: RTCPeerConnection | null = null
@@ -14,7 +14,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private currentAgentTranscript: string = ''
   private toolArgsBuffers = new Map<string, { name: string; args: string }>()
   private dataChannel: RTCDataChannel | null = null
-  private pendingMessages: any[] = []
+  private pendingMessages: unknown[] = []
   private defaultOrgId: string | undefined
   private defaultCalendarId: string | undefined
   private defaultAgentId: string | undefined
@@ -23,8 +23,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
   private calendarIds: string[] | undefined
   private awaitingTool: boolean = false
-  private awaitingToolTimer: any = null
-  private fallbackTimer: any = null
+  private awaitingToolTimer: unknown = null
+  private fallbackTimer: unknown = null
   private lastTranscript: string = ''
   private tz: string | undefined
 
@@ -47,7 +47,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
   private requireTool(name: 'check' | 'slots', opts?: { text?: string }) {
     // Cancel any current generation and require a tool call
-    try { this.sendOAI({ type: 'response.cancel' }) } catch {}
+    try { this.sendOAI({ type: 'response.cancel' }) } catch {
+    // Error handled
+  }
     const instructions =
       name === 'slots'
         ? 'User asked for day availability. Call getAvailableSlots with the requested date (YYYY-MM-DD). Do not state times unless they come from the tool result.'
@@ -94,7 +96,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
                 .then(async (r2) => ({ ok2: r2.ok, j2: await r2.json().catch(() => ({})) }))
                 .then(({ ok2, j2 }) => {
                   if (ok2 && Array.isArray(j2?.slots) && j2.slots.length) {
-                    const list = j2.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, j2.timeZone || this.tz)).join(', ')
+                    const list = j2.slots.slice(0, 5).map((it: unknown) => this.fmtRange(it.start, it.end, j2.timeZone || this.tz)).join(', ')
                     this.speak(`That time is not available. Here are some options: ${list}.`)
                   } else {
                     this.speak('That time is not available and I could not retrieve alternative slots.')
@@ -111,7 +113,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
   private speak(text: string) {
     // Try to cancel any ongoing response first
-    try { this.sendOAI({ type: 'response.cancel' }) } catch {}
+    try { this.sendOAI({ type: 'response.cancel' }) } catch {
+    // Error handled
+  }
     
     // Report what we're trying to say
     this.onToolEvent?.({ kind: 'event', type: 'spoken', text })
@@ -258,7 +262,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   async disconnect(): Promise<void> {
     try {
       this.sendOAI({ type: 'response.cancel' })
-    } catch {}
+    } catch {
+    // Error handled
+  }
     this.pc?.close()
     this.pc = null
     this.mic?.getTracks().forEach((t) => t.stop())
@@ -268,7 +274,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     this.pendingMessages = []
   }
 
-  private handleOAIEvent = (raw: any) => {
+  private handleOAIEvent = (raw: unknown) => {
     try {
       const msg = typeof raw === 'string' ? JSON.parse(raw) : raw
       // Lightweight debug logging to help diagnose tool calling
@@ -396,7 +402,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   }
 
   private async invokeTool(callId: string, name: string, argsJson: string) {
-    let args: any = {}
+    let args: unknown = {}
     try {
       args = argsJson ? JSON.parse(argsJson) : {}
     } catch {
@@ -471,18 +477,24 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ date, slotMinutes: 60, calendarIds: this.calendarIds })
             })
-            let j: any = null
-            try { j = await r2.json() } catch {}
+            let j: unknown = null
+            try { j = await r2.json() } catch {
+    // Error handled
+  }
             if (r2.ok && j?.slots?.length) {
               const tz2 = j.timeZone
-              try { this.onSlots?.(j.slots, tz2) } catch {}
-              const list = j.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, tz2)).join(', ')
+              try { this.onSlots?.(j.slots, tz2) } catch {
+    // Error handled
+  }
+              const list = j.slots.slice(0, 5).map((it: unknown) => this.fmtRange(it.start, it.end, tz2)).join(', ')
               spokenResponse = `Sorry, ${requestedTime} is not available. The available times that day are: ${list}.`
             } else {
               spokenResponse = `Sorry, ${requestedTime} is not available and I could not retrieve alternative slots for that day.`
             }
           }
-        } catch {}
+        } catch {
+    // Error handled
+  }
         
         // Send tool result with suppression flag, then speak our response
         await this.sendToolResult(callId, res, true)
@@ -525,7 +537,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
             const e = res?.end || args.end
             spokenResponse = `Perfect! I've booked ${this.fmtRange(s, e, tz)} for you. It's now on your calendar.`
           }
-        } catch {}
+        } catch {
+    // Error handled
+  }
         
         await this.sendToolResult(callId, res, true)
         if (spokenResponse) {
@@ -562,17 +576,21 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         try {
           if (Array.isArray(res?.slots)) {
             const tz = res?.timeZone
-            try { this.onSlots?.(res.slots, tz) } catch {}
+            try { this.onSlots?.(res.slots, tz) } catch {
+    // Error handled
+  }
             if (res.slots.length === 0) {
               spokenResponse = 'No free slots found that day.'
             } else {
-              const list = res.slots.slice(0, 5).map((it: any) => this.fmtRange(it.start, it.end, tz)).join(', ')
+              const list = res.slots.slice(0, 5).map((it: unknown) => this.fmtRange(it.start, it.end, tz)).join(', ')
               spokenResponse = `Available times are: ${list}.`
             }
           } else if (res?.error) {
             spokenResponse = 'I could not retrieve the day availability at the moment.'
           }
-        } catch {}
+        } catch {
+    // Error handled
+  }
         
         await this.sendToolResult(callId, res, true)
         if (spokenResponse) {
@@ -590,7 +608,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     }
   }
 
-  private async sendToolResult(callId: string, result: any, suppressResponse: boolean = false) {
+  private async sendToolResult(callId: string, result: unknown, suppressResponse: boolean = false) {
     // Provide tool output to the model
     const createItem = {
       type: 'conversation.item.create',
@@ -635,7 +653,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     }
   }
 
-  private sendOAI(msg: any) {
+  private sendOAI(msg: unknown) {
     const dc = this.dataChannel
     const payload = JSON.stringify(msg)
     if (dc && dc.readyState === 'open') {

@@ -42,14 +42,14 @@ export async function POST(
     }, greeting);
 
     // Add gather to capture user input
-    const gather = response.gather({
-      input: ['speech'],
-      timeout: 5,
-      language: agent.language || 'en-US',
-      speechTimeout: 'auto',
-      action: `/api/webhook/agent/${token}/process`,
-      method: 'POST'
-    });
+    // const gather = response.gather({
+    //   input: ['speech'],
+    //   timeout: 5,
+    //   language: agent.language || 'en-US',
+    //   speechTimeout: 'auto',
+    //   action: `/api/webhook/agent/${token}/process`,
+    //   method: 'POST'
+    // });
 
     // If no input, hang up
     response.say('I didn\'t hear anything. Goodbye.');

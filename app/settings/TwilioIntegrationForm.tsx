@@ -1,14 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { createBrowserClient } from '@supabase/ssr';
 import { Button } from '../../components/ui/button';
 
-interface TwilioIntegrationFormProps {
-  userId: string;
-}
 
-export default function TwilioIntegrationForm({ userId }: TwilioIntegrationFormProps) {
+export default function TwilioIntegrationForm() {
   const [accountSid, setAccountSid] = useState('');
   const [authToken, setAuthToken] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -17,10 +13,10 @@ export default function TwilioIntegrationForm({ userId }: TwilioIntegrationFormP
   const [error, setError] = useState('');
   const [showAuthToken, setShowAuthToken] = useState(false);
 
-  const supabase = createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  // const supabase = createBrowserClient(
+  //   process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  //   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  // );
 
   useEffect(() => {
     // Load existing Twilio configuration

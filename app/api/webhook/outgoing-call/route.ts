@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
       to: phoneNumber,
       from: twilioSettings.phone_number,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error('Error creating outgoing call:', error);
     
     // Handle Twilio-specific errors

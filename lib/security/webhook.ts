@@ -30,7 +30,7 @@ export interface WebhookLogEntry {
   webhook_token: string
   ip_address: string
   user_agent: string | null
-  request_headers: Record<string, any>
+  request_headers: Record<string, unknown>
   request_body: any
   response_status: number
   error_message?: string

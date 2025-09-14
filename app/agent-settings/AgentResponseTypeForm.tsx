@@ -7,11 +7,7 @@ import { Button } from '../../components/ui/button';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Loader2, Save } from 'lucide-react';
 
-interface AgentResponseTypeFormProps {
-  userId: string;
-}
-
-export default function AgentResponseTypeForm({ userId }: AgentResponseTypeFormProps) {
+export default function AgentResponseTypeForm() {
   const [phoneCallEnabled, setPhoneCallEnabled] = useState(true);
   const [emailEnabled, setEmailEnabled] = useState(false);
   const [smsEnabled, setSmsEnabled] = useState(false);

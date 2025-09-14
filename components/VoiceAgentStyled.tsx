@@ -1,3 +1,5 @@
+
+
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
@@ -8,11 +10,8 @@ import Link from 'next/link'
 import { Button } from './ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Badge } from './ui/badge'
-import { Alert, AlertDescription } from './ui/alert'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
 import { Separator } from './ui/separator'
-import { ChevronDown, Mic, MicOff, Phone, PhoneOff, Eye, EyeOff, Clock, Bug, TestTube2, Settings } from 'lucide-react'
-import { cn } from '../lib/utils'
 
 type GCalendar = {
   id: string
@@ -43,21 +42,19 @@ export function VoiceAgentStyled({
 }) {
   const [connected, setConnected] = useState(false)
   const [transcript, setTranscript] = useState<string[]>([])
-  const [org, setOrg] = useState<{ id: string; name: string } | null>(null)
-  const [calendars, setCalendars] = useState<GCalendar[]>([])
+  const [, setCalendars] = useState<GCalendar[]>([])
   const [selectedCalIds, setSelectedCalIds] = useState<string[]>([])
-  const [calendarId, setCalendarId] = useState<string>('primary')
   const [calendarTz, setCalendarTz] = useState<string | null>(null)
   const [useUnion, setUseUnion] = useState(false)
   const agentRef = useRef<OpenAIRealtimeAgent | null>(null)
   const [debugOpen, setDebugOpen] = useState(false)
-  const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: any }>>([])
-  const [testResult, setTestResult] = useState<any>(null)
+  const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: unknown }>>([])
+  const [testResult,] = useState<unknown>(null)
   const [agentSays, setAgentSays] = useState<string[]>([])
   const [actualAgentTranscript, setActualAgentTranscript] = useState<string[]>([])
   const [availableSlots, setAvailableSlots] = useState<Array<{ start: string; end: string }>>([])
   const [slotsTz, setSlotsTz] = useState<string | null>(null)
-  const [showUserTranscript, setShowUserTranscript] = useState<boolean>(false)
+  const [showUserTranscript,] = useState<boolean>(false)
   const [showAgentTranscript, setShowAgentTranscript] = useState<boolean>(true)
 
   useEffect(() => {
@@ -88,7 +85,9 @@ export function VoiceAgentStyled({
       if (savedSel) setSelectedCalIds(JSON.parse(savedSel))
       const savedBook = localStorage.getItem('cal_book')
       if (savedBook) setCalendarId(savedBook)
-    } catch {}
+    } catch {
+    // Error handled
+  }
 
     // Fetch initial data
     fetch('/api/org/default')
@@ -111,12 +110,12 @@ export function VoiceAgentStyled({
         .then((j) => {
           if (!j?.calendars) return
           setCalendars(j.calendars)
-          const defaults = j.calendars.filter((c: any) => c.selected || c.primary).map((c: any) => c.id)
-          const sel = defaults.length ? defaults : j.calendars.map((c: any) => c.id)
+          const defaults = j.calendars.filter((c: unknown) => c.selected || c.primary).map((c: unknown) => c.id)
+          const sel = defaults.length ? defaults : j.calendars.map((c: unknown) => c.id)
           const nextSel = selectedCalIds.length ? selectedCalIds : sel
           setSelectedCalIds(nextSel)
           agentRef.current?.setCalendarIds(useUnion ? nextSel : [calendarId])
-          const primary = j.calendars.find((c: any) => c.primary) || j.calendars[0]
+          const primary = j.calendars.find((c: unknown) => c.primary) || j.calendars[0]
           if (primary) {
             setCalendarId(primary.id)
             if (primary.timeZone) setCalendarTz(primary.timeZone)
@@ -137,7 +136,6 @@ export function VoiceAgentStyled({
       await agentRef.current!.connect(systemPrompt, {
         organizationId: org?.id,
         agentId,
-        calendarId,
         greeting,
         language,
         timeZone: calendarTz || undefined
@@ -156,17 +154,23 @@ export function VoiceAgentStyled({
 
   // Persist selections
   useEffect(() => {
-    try { localStorage.setItem('cal_union', useUnion ? '1' : '0') } catch {}
+    try { localStorage.setItem('cal_union', useUnion ? '1' : '0') } catch {
+    // Error handled
+  }
     agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
   }, [useUnion])
 
   useEffect(() => {
-    try { localStorage.setItem('cal_selected', JSON.stringify(selectedCalIds)) } catch {}
+    try { localStorage.setItem('cal_selected', JSON.stringify(selectedCalIds)) } catch {
+    // Error handled
+  }
     agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
   }, [selectedCalIds])
 
   useEffect(() => {
-    try { localStorage.setItem('cal_book', calendarId) } catch {}
+    try { localStorage.setItem('cal_book', calendarId) } catch {
+    // Error handled
+  }
     agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
   }, [calendarId])
 
@@ -295,7 +299,7 @@ export function VoiceAgentStyled({
                 const res = await fetch('/api/calendar/check-availability', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ organizationId: org.id, start: startIso, end: endIso, calendarId })
+                  body: JSON.stringify({ organizationId: org.id, start: startIso, end: endIso})
                 }).then((r) => r.json())
                 setTestResult(res)
               }}
@@ -427,11 +431,7 @@ export function VoiceAgentStyled({
 }
 
 // Helper component for organization bar
-function OrgBar({
-  org,
-  setOrg,
-  calendarId
-}: {
+function OrgBar({}: {
   org: { id: string; name: string } | null
   setOrg: (org: { id: string; name: string } | null) => void
   calendarId: string

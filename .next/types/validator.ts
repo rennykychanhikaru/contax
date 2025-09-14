@@ -227,6 +227,12 @@ type RouteHandlerConfig<Route extends AppRouteHandlerRoutes = AppRouteHandlerRou
   handler satisfies RouteHandlerConfig<"/api/webhook/[userId]/[token]">
 }
 
+// Validate ../../app/api/webhook/agent/[token]/trigger-call/route.ts
+{
+  const handler = {} as typeof import("../../app/api/webhook/agent/[token]/trigger-call/route.js")
+  handler satisfies RouteHandlerConfig<"/api/webhook/agent/[token]/trigger-call">
+}
+
 // Validate ../../app/api/webhook/agent/[token]/trigger/route.ts
 {
   const handler = {} as typeof import("../../app/api/webhook/agent/[token]/trigger/route.js")

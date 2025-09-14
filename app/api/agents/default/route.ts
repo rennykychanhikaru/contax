@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 
 // GET - Get the default agent for the user's organization
-export async function GET(req: NextRequest) {
+export async function GET() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -57,7 +57,19 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'No agent configuration found' }, { status: 404 });
     }
 
-    return NextResponse.json({ 
+    // Fix webhook URL if it has the wrong format
+    if (agent.webhook_token && (!agent.webhook_url || !agent.webhook_url.endsWith('/trigger-call'))) {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+      agent.webhook_url = `${baseUrl}/api/webhook/agent/${agent.webhook_token}/trigger-call`;
+
+      // Update the database with the corrected URL
+      await supabase
+        .from('agent_configurations')
+        .update({ webhook_url: agent.webhook_url })
+        .eq('id', agent.id);
+    }
+
+    return NextResponse.json({
       agent,
       organization: member.organization
     });
@@ -120,7 +132,22 @@ export async function POST(req: NextRequest) {
       .eq('name', 'default')
       .single();
 
-    const agentData: any = {
+    interface AgentData {
+      organization_id: string;
+      name: string;
+      display_name: string;
+      prompt: string;
+      greeting: string;
+      language: string;
+      temperature: number;
+      max_tokens: number;
+      webhook_enabled: boolean;
+      updated_at: string;
+      webhook_token?: string;
+      webhook_url?: string;
+    }
+
+    const agentData: AgentData = {
       organization_id: member.organization_id,
       name: 'default',
       display_name: display_name || 'AI Assistant',
@@ -139,17 +166,34 @@ export async function POST(req: NextRequest) {
         .rpc('generate_webhook_token');
       if (tokenResult) {
         agentData.webhook_token = tokenResult;
-        // Generate the webhook URL
+        // Generate the webhook URL with correct path
         const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
-        agentData.webhook_url = `${baseUrl}/api/webhook/agent/${tokenResult}/trigger`;
+        agentData.webhook_url = `${baseUrl}/api/webhook/agent/${tokenResult}/trigger-call`;
       }
+    } else if (existingAgent?.webhook_token && !existingAgent?.webhook_url) {
+      // Fix webhook URL if token exists but URL is missing
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
+      agentData.webhook_url = `${baseUrl}/api/webhook/agent/${existingAgent.webhook_token}/trigger-call`;
     }
 
     let result;
     
     if (existingAgent) {
       // Update existing configuration
-      const updateData: any = {
+      interface UpdateData {
+        updated_at: string;
+        display_name?: string;
+        prompt?: string;
+        greeting?: string;
+        language?: string;
+        temperature?: number;
+        max_tokens?: number;
+        webhook_enabled?: boolean;
+        webhook_token?: string;
+        webhook_url?: string;
+      }
+
+      const updateData: UpdateData = {
         updated_at: new Date().toISOString()
       };
       
@@ -167,10 +211,14 @@ export async function POST(req: NextRequest) {
           .rpc('generate_webhook_token');
         if (tokenResult) {
           updateData.webhook_token = tokenResult;
-          // Generate the webhook URL
+          // Generate the webhook URL with correct path
           const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
-          updateData.webhook_url = `${baseUrl}/api/webhook/agent/${tokenResult}/trigger`;
+          updateData.webhook_url = `${baseUrl}/api/webhook/agent/${tokenResult}/trigger-call`;
         }
+      } else if (webhook_enabled && existingAgent.webhook_token && !existingAgent.webhook_url) {
+        // Fix webhook URL if token exists but URL is missing
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001';
+        updateData.webhook_url = `${baseUrl}/api/webhook/agent/${existingAgent.webhook_token}/trigger-call`;
       }
       
       result = await supabase

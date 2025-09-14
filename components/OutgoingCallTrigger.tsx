@@ -1,148 +1,71 @@
 'use client';
 
 import { useState } from 'react';
-import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
-import { Phone, PhoneOff, Loader2 } from 'lucide-react';
+import { Button } from '../components/ui/button';
+import { Phone } from 'lucide-react';
 
 interface OutgoingCallTriggerProps {
-  organizationId?: string;
-  userId?: string;
-  agentId?: string;
+  phoneNumber?: string;
 }
 
-export function OutgoingCallTrigger({ 
-  organizationId, 
-  userId, 
-  agentId 
-}: OutgoingCallTriggerProps) {
-  const [phoneNumber, setPhoneNumber] = useState('');
+export default function OutgoingCallTrigger({ phoneNumber }: OutgoingCallTriggerProps) {
   const [isLoading, setIsLoading] = useState(false);
-  const [callSid, setCallSid] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
 
-  const handleCall = async () => {
-    if (!phoneNumber) {
-      setError('Please enter a phone number');
-      return;
-    }
-
-    // Basic phone number validation
-    const cleanedNumber = phoneNumber.replace(/\D/g, '');
-    if (cleanedNumber.length < 10) {
-      setError('Please enter a valid phone number');
-      return;
-    }
-
+  const handleTriggerCall = async () => {
     setIsLoading(true);
     setError(null);
+    setSuccess(false);
+
+    const targetNumber = phoneNumber || prompt('Enter phone number to call:');
+    if (!targetNumber) {
+      setIsLoading(false);
+      return;
+    }
 
     try {
-      const response = await fetch('/api/webhook/outgoing-call', {
+      const response = await fetch('/api/webhook/trigger-call', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          phoneNumber: phoneNumber.startsWith('+') ? phoneNumber : `+1${cleanedNumber}`,
-          organizationId,
-          userId,
-          agentId,
+          phoneNumber: targetNumber,
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to initiate call');
+        throw new Error(data.error || 'Failed to trigger call');
       }
 
-      setCallSid(data.callSid);
-      console.log('Call initiated:', data);
-    } catch (err: any) {
-      setError(err.message || 'Failed to initiate call');
-      console.error('Error initiating call:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleHangup = async () => {
-    if (!callSid) return;
-
-    setIsLoading(true);
-    try {
-      // You can implement a hangup endpoint if needed
-      console.log('Hanging up call:', callSid);
-      setCallSid(null);
-      setPhoneNumber('');
-    } catch (err) {
-      console.error('Error hanging up:', err);
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 3000);
+    } catch (error) {
+      console.error('Error triggering call:', error);
+      setError(error instanceof Error ? error.message : 'Failed to trigger call');
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="space-y-4">
-
-      <div className="space-y-2">
-        <Label htmlFor="phone">Phone Number</Label>
-        <Input
-          id="phone"
-          type="tel"
-          placeholder="+1 (555) 123-4567"
-          value={phoneNumber}
-          onChange={(e) => setPhoneNumber(e.target.value)}
-          disabled={isLoading || !!callSid}
-        />
-        {error && (
-          <p className="text-sm text-red-600">{error}</p>
-        )}
-      </div>
-
-      <div className="flex gap-2">
-        {!callSid ? (
-          <Button
-            onClick={handleCall}
-            disabled={isLoading || !phoneNumber}
-            className="flex items-center gap-2"
-          >
-            {isLoading ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Initiating...
-              </>
-            ) : (
-              <>
-                <Phone className="h-4 w-4" />
-                Call
-              </>
-            )}
-          </Button>
-        ) : (
-          <Button
-            onClick={handleHangup}
-            variant="destructive"
-            disabled={isLoading}
-            className="flex items-center gap-2"
-          >
-            <PhoneOff className="h-4 w-4" />
-            Hang Up
-          </Button>
-        )}
-      </div>
-
-      {callSid && (
-        <div className="p-3 bg-green-50 border border-green-200 rounded">
-          <p className="text-sm text-green-800">
-            Call initiated successfully!
-          </p>
-          <p className="text-xs text-green-600 mt-1">
-            Call SID: {callSid}
-          </p>
-        </div>
+    <div className="flex flex-col gap-2">
+      <Button
+        onClick={handleTriggerCall}
+        disabled={isLoading}
+        className="w-full"
+      >
+        <Phone className="mr-2 h-4 w-4" />
+        {isLoading ? 'Calling...' : 'Trigger Outgoing Call'}
+      </Button>
+      {error && (
+        <p className="text-sm text-red-600">{error}</p>
+      )}
+      {success && (
+        <p className="text-sm text-green-600">Call initiated successfully!</p>
       )}
     </div>
   );

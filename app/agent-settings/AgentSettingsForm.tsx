@@ -25,9 +25,6 @@ import {
   TooltipTrigger,
 } from '../../components/ui/tooltip';
 
-interface AgentSettingsFormProps {
-  userId: string;
-}
 
 const DEFAULT_PROMPT = `You are a helpful scheduling assistant for Renny's office. 
 You can help callers:
@@ -51,7 +48,7 @@ interface CalendarStatus {
   connectedAt?: string;
 }
 
-export default function AgentSettingsForm({ userId }: AgentSettingsFormProps) {
+export default function AgentSettingsForm() {
   const searchParams = useSearchParams();
   const [agentId, setAgentId] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState('');

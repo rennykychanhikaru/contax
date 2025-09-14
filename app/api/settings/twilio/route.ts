@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 
 // GET - Retrieve Twilio configuration
-export async function GET(req: NextRequest) {
+export async function GET() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -171,7 +171,20 @@ export async function POST(req: NextRequest) {
     
     if (existing) {
       // Update existing settings
-      const updateData: any = {
+      interface UpdateData {
+      updated_at: string;
+      phone_number?: string;
+      account_sid?: string;
+      auth_token?: string;
+      webhook_url?: string;
+      webhook_method?: string;
+      status_callback_url?: string;
+      voice_url?: string;
+      sms_url?: string;
+      is_active?: boolean;
+    }
+
+    const updateData: UpdateData = {
         account_sid: accountSid,
         phone_number: phoneNumber,
         updated_at: new Date().toISOString()
@@ -227,7 +240,7 @@ export async function POST(req: NextRequest) {
 }
 
 // DELETE - Remove Twilio configuration
-export async function DELETE(req: NextRequest) {
+export async function DELETE() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

@@ -14,7 +14,7 @@ type GCalStatus = {
 }
 
 export function CalendarStatus() {
-  const [loading, setLoading] = useState(false)
+  const [, setLoading] = useState(false)
   const [status, setStatus] = useState<GCalStatus | null>(null)
 
   async function refresh() {

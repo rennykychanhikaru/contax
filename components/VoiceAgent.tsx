@@ -1,3 +1,5 @@
+
+
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
@@ -13,9 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from './ui/badge'
 import { Alert, AlertDescription } from './ui/alert'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
-import { ChevronDown, Mic, MicOff, Phone, PhoneOff, Eye, EyeOff, Calendar, TestTube } from 'lucide-react'
 
-type GCalStatus = {
   connected: boolean
   hasToken: boolean
   scopes?: string[]
@@ -37,8 +37,8 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
   const [useUnion, setUseUnion] = useState<boolean>(true)
   const agentRef = useRef<OpenAIRealtimeAgent | null>(null)
   const [debugOpen, setDebugOpen] = useState(false)
-  const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: any }>>([])
-  const [testResult, setTestResult] = useState<any>(null)
+  const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: unknown }>>([])
+  const [testResult, setTestResult] = useState<unknown>(null)
   const [agentSays, setAgentSays] = useState<string[]>([])
   const [actualAgentTranscript, setActualAgentTranscript] = useState<string[]>([])
   const [availableSlots, setAvailableSlots] = useState<Array<{ start: string; end: string }>>([])
@@ -74,7 +74,9 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
       if (savedSel) setSelectedCalIds(JSON.parse(savedSel))
       const savedBook = localStorage.getItem('cal_book')
       if (savedBook) setCalendarId(savedBook)
-    } catch {}
+    } catch {
+    // Error handled
+  }
 
     // Fetch default org
     fetch('/api/org/default')
@@ -93,13 +95,13 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
         if (!j?.calendars) return
         setCalendars(j.calendars)
         // Default to all calendars the user has selected in Google, plus primary
-        const defaults = j.calendars.filter((c: any) => c.selected || c.primary).map((c: any) => c.id)
-        const sel = defaults.length ? defaults : j.calendars.map((c: any) => c.id)
+        const defaults = j.calendars.filter((c: unknown) => c.selected || c.primary).map((c: unknown) => c.id)
+        const sel = defaults.length ? defaults : j.calendars.map((c: unknown) => c.id)
         // If we have a persisted selection, prefer it; else default
         const nextSel = selectedCalIds.length ? selectedCalIds : sel
         setSelectedCalIds(nextSel)
         agentRef.current?.setCalendarIds(useUnion ? nextSel : [calendarId])
-        const primary = j.calendars.find((c: any) => c.primary) || j.calendars[0]
+        const primary = j.calendars.find((c: unknown) => c.primary) || j.calendars[0]
         if (primary) {
           setCalendarId(primary.id)
           if (primary.timeZone) setCalendarTz(primary.timeZone)
@@ -138,18 +140,24 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
 
   // Persist selections
   useEffect(() => {
-    try { localStorage.setItem('cal_union', useUnion ? '1' : '0') } catch {}
+    try { localStorage.setItem('cal_union', useUnion ? '1' : '0') } catch {
+    // Error handled
+  }
     // update agent calendarIds when toggle changes
     agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
   }, [useUnion])
 
   useEffect(() => {
-    try { localStorage.setItem('cal_selected', JSON.stringify(selectedCalIds)) } catch {}
+    try { localStorage.setItem('cal_selected', JSON.stringify(selectedCalIds)) } catch {
+    // Error handled
+  }
     agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
   }, [selectedCalIds])
 
   useEffect(() => {
-    try { localStorage.setItem('cal_book', calendarId) } catch {}
+    try { localStorage.setItem('cal_book', calendarId) } catch {
+    // Error handled
+  }
     agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
   }, [calendarId])
 

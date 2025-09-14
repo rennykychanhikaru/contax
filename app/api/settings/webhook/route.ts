@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const cookieStore = await cookies();
     const supabase = createServerClient(
@@ -185,7 +185,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-export async function DELETE(req: NextRequest) {
+export async function DELETE() {
   try {
     const cookieStore = await cookies();
     const supabase = createServerClient(

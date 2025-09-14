@@ -45,7 +45,7 @@ export async function POST(
   
   try {
     // Parse and validate request body
-    let body: any
+    let body: unknown
     try {
       body = await req.json()
     } catch (parseError) {
@@ -135,8 +135,8 @@ export async function POST(
     }
     
     // Get agent configuration
-    const agentPrompt = org.settings?.agent_prompt || 'You are a helpful scheduling assistant.'
-    const voiceConfig = org.settings?.voice_config || { voice: 'alloy', model: 'gpt-4o-realtime-preview' }
+    // const agentPrompt = org.settings?.agent_prompt || 'You are a helpful scheduling assistant.'
+    // const voiceConfig = org.settings?.voice_config || { voice: 'alloy', model: 'gpt-4o-realtime-preview' }
     
     // Create call record
     const { data: call, error: callError } = await supabase
@@ -212,7 +212,7 @@ export async function POST(
 }
 
 // OPTIONS request for CORS preflight
-export async function OPTIONS(req: NextRequest) {
+export async function OPTIONS() {
   return new NextResponse(null, {
     status: 200,
     headers: {

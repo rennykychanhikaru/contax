@@ -7,11 +7,10 @@ export async function GET(req: NextRequest) {
   const redirectUri = process.env.GOOGLE_OAUTH_REDIRECT || 'http://localhost:3000/api/google/oauth/callback'
 
   if (!code || !clientId || !clientSecret) {
-    return NextResponse.json({ error: 'Missing code or client credentials' }, { status: 400 })
+    return NextResponse.json({ error: 'Missing parameters' }, { status: 400 })
   }
 
-  // Exchange code for tokens
-  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+  const r = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -23,26 +22,31 @@ export async function GET(req: NextRequest) {
     })
   })
 
-  if (!tokenRes.ok) {
-    const t = await tokenRes.text()
-    return NextResponse.json({ error: 'token-exchange-failed', detail: t }, { status: 500 })
+  const data = await r.json()
+
+  if (data.error || !data.access_token) {
+    return NextResponse.json({ error: data.error || 'Failed to get token' }, { status: 400 })
   }
 
-  const tok = await tokenRes.json()
-  const accessToken = tok.access_token as string
-  const refreshToken = tok.refresh_token as string | undefined
-  const expiresIn = (tok.expires_in as number) || 3600
-  const nowSec = Math.floor(Date.now() / 1000)
-  const expirySec = nowSec + expiresIn - 60 // 60s early refresh window
+  const response = NextResponse.redirect(new URL('/', req.url))
+  response.cookies.set('gcal_access', data.access_token, {
+    httpOnly: true,
+    path: '/',
+    maxAge: data.expires_in || 3600
+  })
 
-  const res = NextResponse.redirect(new URL('/', req.url))
-  res.cookies.set('gcal_access', accessToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
-  if (refreshToken) {
-    res.cookies.set('gcal_refresh', refreshToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
+  if (data.refresh_token) {
+    response.cookies.set('gcal_refresh', data.refresh_token, {
+      httpOnly: true,
+      path: '/'
+    })
   }
-  res.cookies.set('gcal_expiry', String(expirySec), { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
-  // Backward compatibility with prior code path
-  res.cookies.set('gcal_token', accessToken, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' })
-  return res
+
+  const expiry = Date.now() + (data.expires_in || 3600) * 1000
+  response.cookies.set('gcal_expiry', expiry.toString(), {
+    httpOnly: true,
+    path: '/'
+  })
+
+  return response
 }
-
