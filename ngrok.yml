@@ -1,0 +1,9 @@
+      version: "2"
+      authtoken: 32QxYg4uBTQAULNjw7dWl5DDQCr_5yNCY2RsRKP8imsvKaqF9
+      tunnels:
+        web:
+          addr: 3000
+          proto: http
+        voice:
+          addr: 8787
+          proto: http

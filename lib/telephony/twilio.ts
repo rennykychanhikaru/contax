@@ -34,6 +34,7 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
     baseUrl?: string
     organizationId?: string
     agentId?: string
+    voice?: string
   }): Promise<void> {
     if (!this.client || !this.config) {
       throw new Error('Twilio client not configured')
@@ -44,17 +45,20 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       throw new Error('Base URL is required for outbound calls')
     }
 
-    // Create TwiML for the call
+    // Create TwiML for the call. We connect the call audio to our WebSocket media-stream endpoint.
+    // The assistant will speak the greeting first via the media bridge.
+    const wsHost = new URL(baseUrl).host
+    const voice = options?.voice || 'sage'
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Connecting you to the assistant. Please wait.</Say>
-    <Connect>
-        <Stream url="wss://${new URL(baseUrl).host}/api/twilio/media-stream">
-            <Parameter name="organizationId" value="${options?.organizationId || ''}" />
-            <Parameter name="agentId" value="${options?.agentId || 'default'}" />
-            <Parameter name="direction" value="outbound" />
-        </Stream>
-    </Connect>
+  <Connect>
+    <Stream url="wss://${wsHost}/api/twilio/media-stream">
+      <Parameter name="organizationId" value="${options?.organizationId || ''}" />
+      <Parameter name="agentId" value="${options?.agentId || 'default'}" />
+      <Parameter name="direction" value="outbound" />
+      <Parameter name="voice" value="${voice}" />
+    </Stream>
+  </Connect>
 </Response>`
 
     try {
@@ -105,4 +109,3 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
 
 // Export a singleton instance for backward compatibility
 export const TwilioTelephonyAdapterInstance = new TwilioTelephonyAdapter()
-

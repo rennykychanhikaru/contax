@@ -254,9 +254,8 @@ export async function POST(
     const twilioClient = twilio(twilioSid, twilioToken)
 
     try {
-      // Create TwiML webhook URL for handling the call
-      // This should point to your endpoint that handles the voice interaction
-      const twimlUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/api/twilio/voice?callId=${call.id}`
+      // Use our TwiML route which returns <Connect><Stream> for media streaming
+      const twimlUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/api/webhook/agent/${webhookToken}/twiml`
 
       // Initiate the call via Twilio
       const twilioCall = await twilioClient.calls.create({
@@ -264,7 +263,8 @@ export async function POST(
         to: validatedData.phoneNumber,
         url: twimlUrl, // URL that will handle the call with TwiML
         method: 'POST',
-        statusCallback: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/api/twilio/status`,
+        // Optional: update to a working status callback route if desired
+        statusCallback: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001'}/api/webhook/call-status`,
         statusCallbackMethod: 'POST',
         statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
         record: true, // Record the call

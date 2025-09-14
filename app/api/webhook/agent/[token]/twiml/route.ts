@@ -32,27 +32,20 @@ export async function POST(
       });
     }
 
-    // Use the agent's greeting
-    const greeting = agent.greeting || 'Hello! How can I help you today?';
-    
-    // Connect to the agent (similar to existing webhook logic)
-    response.say({
-      voice: 'alice',
-      language: agent.language || 'en-US'
-    }, greeting);
-
-    // Add gather to capture user input
-    // const gather = response.gather({
-    //   input: ['speech'],
-    //   timeout: 5,
-    //   language: agent.language || 'en-US',
-    //   speechTimeout: 'auto',
-    //   action: `/api/webhook/agent/${token}/process`,
-    //   method: 'POST'
-    // });
-
-    // If no input, hang up
-    response.say('I didn\'t hear anything. Goodbye.');
+    // Build <Connect><Stream> so Twilio streams audio to our WS bridge.
+    // The WS handler will fetch this agent and speak agent.greeting first.
+    const explicitWss = process.env.TWILIO_STREAM_WSS_URL // e.g., wss://<your-ngrok-ws-domain>
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || `https://${req.headers.get('host')}`;
+    const wsUrl = explicitWss ? `${explicitWss.replace(/\/$/, '')}/twilio-media` : `wss://${new URL(baseUrl).host}/api/twilio/media-stream`;
+    const connect = response.connect();
+    const stream = connect.stream({ url: wsUrl });
+    stream.parameter({ name: 'organizationId', value: agent.organization_id || '' });
+    stream.parameter({ name: 'agentId', value: agent.id });
+    stream.parameter({ name: 'direction', value: 'outbound' });
+    // Allow voice to be overridden in the future; default to 'sage' for now
+    stream.parameter({ name: 'voice', value: (agent as any).voice || 'sage' });
+    // Fallback: if Stream handshake fails, Twilio should continue to next verb.
+    response.say({ voice: 'alice', language: agent.language || 'en-US' }, agent.greeting || 'Hello! How can I help you today?');
     response.hangup();
 
     return new NextResponse(response.toString(), {
