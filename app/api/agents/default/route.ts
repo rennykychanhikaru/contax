@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { display_name, prompt, greeting, language, temperature, max_tokens, webhook_enabled } = body;
+    const { display_name, prompt, greeting, voice, language, temperature, max_tokens, webhook_enabled } = body;
 
     // Get user's organization
     const { data: member } = await supabase
@@ -138,6 +138,7 @@ export async function POST(req: NextRequest) {
       display_name: string;
       prompt: string;
       greeting: string;
+      voice: string;
       language: string;
       temperature: number;
       max_tokens: number;
@@ -153,6 +154,7 @@ export async function POST(req: NextRequest) {
       display_name: display_name || 'AI Assistant',
       prompt: prompt || 'You are a helpful scheduling assistant.',
       greeting: greeting || 'Hi! Thanks for calling. How can I help you today?',
+      voice: voice || 'sage',
       language: language || 'en-US',
       temperature: temperature || 0.7,
       max_tokens: max_tokens || 500,
@@ -185,6 +187,7 @@ export async function POST(req: NextRequest) {
         display_name?: string;
         prompt?: string;
         greeting?: string;
+        voice?: string;
         language?: string;
         temperature?: number;
         max_tokens?: number;
@@ -196,10 +199,11 @@ export async function POST(req: NextRequest) {
       const updateData: UpdateData = {
         updated_at: new Date().toISOString()
       };
-      
+
       if (display_name !== undefined) updateData.display_name = display_name || 'AI Assistant';
       if (prompt !== undefined) updateData.prompt = prompt;
       if (greeting !== undefined) updateData.greeting = greeting;
+      if (voice !== undefined) updateData.voice = voice || 'sage';
       if (language !== undefined) updateData.language = language || 'en-US';
       if (temperature !== undefined) updateData.temperature = temperature || 0.7;
       if (max_tokens !== undefined) updateData.max_tokens = max_tokens || 500;

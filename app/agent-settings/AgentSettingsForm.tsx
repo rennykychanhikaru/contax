@@ -6,11 +6,12 @@ import { Button } from '../../components/ui/button';
 import { Label } from '../../components/ui/label';
 import { Textarea } from '../../components/ui/textarea';
 import { Alert, AlertDescription } from '../../components/ui/alert';
-import { Loader2, Save, RotateCcw, Copy, CheckCircle, Info, Calendar, RefreshCw, Unlink } from 'lucide-react';
+import { Loader2, Save, RotateCcw, Copy, CheckCircle, Info, Calendar, RefreshCw, Unlink, Volume2 } from 'lucide-react';
 import { Switch } from '../../components/ui/switch';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Badge } from '../../components/ui/badge';
 import { createBrowserClient } from '@supabase/ssr';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
 
 function createClient() {
   return createBrowserClient(
@@ -37,6 +38,16 @@ Be professional, friendly, and efficient in your responses.`;
 const DEFAULT_GREETING = `Hi! Thanks for calling. I'm your AI assistant. How can I help you today?`;
 
 const DEFAULT_NAME = 'AI Assistant';
+const DEFAULT_VOICE = 'sage';
+
+// Available OpenAI voices for the Realtime API
+const VOICE_OPTIONS = [
+  { value: 'alloy', label: 'Alloy - Female (Balanced, neutral)' },
+  { value: 'shimmer', label: 'Shimmer - Female (Warm, friendly)' },
+  { value: 'echo', label: 'Echo - Male (Smooth, confident)' },
+  { value: 'sage', label: 'Sage - Male (Clear, authoritative)' },
+  { value: 'verse', label: 'Verse - Male (Energetic, expressive)' },
+];
 
 interface CalendarStatus {
   connected: boolean;
@@ -54,6 +65,7 @@ export default function AgentSettingsForm() {
   const [displayName, setDisplayName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [greeting, setGreeting] = useState('');
+  const [voice, setVoice] = useState(DEFAULT_VOICE);
   const [webhookEnabled, setWebhookEnabled] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -77,6 +89,7 @@ export default function AgentSettingsForm() {
           setDisplayName(data.agent.display_name || DEFAULT_NAME);
           setPrompt(data.agent.prompt || DEFAULT_PROMPT);
           setGreeting(data.agent.greeting || DEFAULT_GREETING);
+          setVoice(data.agent.voice || DEFAULT_VOICE);
           setWebhookEnabled(data.agent.webhook_enabled || false);
           setWebhookUrl(data.agent.webhook_url || '');
         } else {
@@ -85,12 +98,14 @@ export default function AgentSettingsForm() {
           setDisplayName(DEFAULT_NAME);
           setPrompt(DEFAULT_PROMPT);
           setGreeting(DEFAULT_GREETING);
+          setVoice(DEFAULT_VOICE);
         }
       } catch (error) {
         console.error('Error fetching agent settings:', error);
         setDisplayName(DEFAULT_NAME);
         setPrompt(DEFAULT_PROMPT);
         setGreeting(DEFAULT_GREETING);
+        setVoice(DEFAULT_VOICE);
       } finally {
         setIsLoading(false);
       }
@@ -180,10 +195,11 @@ export default function AgentSettingsForm() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ 
-          display_name: displayName, 
-          prompt, 
+        body: JSON.stringify({
+          display_name: displayName,
+          prompt,
           greeting,
+          voice,
           webhook_enabled: webhookEnabled
         }),
       });
@@ -206,6 +222,7 @@ export default function AgentSettingsForm() {
     setDisplayName(DEFAULT_NAME);
     setPrompt(DEFAULT_PROMPT);
     setGreeting(DEFAULT_GREETING);
+    setVoice(DEFAULT_VOICE);
     setMessage(null);
   };
 
@@ -285,6 +302,28 @@ export default function AgentSettingsForm() {
           className="min-h-[100px] font-mono text-sm"
           disabled={isSaving}
         />
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Label htmlFor="agent-voice">Agent Voice</Label>
+          <Volume2 className="h-4 w-4 text-gray-400" />
+        </div>
+        <p className="text-sm text-gray-500">
+          Choose the voice personality for your agent.
+        </p>
+        <Select value={voice} onValueChange={setVoice} disabled={isSaving}>
+          <SelectTrigger id="agent-voice" className="w-full">
+            <SelectValue placeholder="Select a voice" />
+          </SelectTrigger>
+          <SelectContent>
+            {VOICE_OPTIONS.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="space-y-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
