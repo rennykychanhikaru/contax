@@ -5,6 +5,15 @@ type ToolEvent =
   | { kind: 'call'; name: string; args: string }
   | { kind: 'result'; name: string; result: unknown }
 
+type AvailabilityResult = {
+  error?: string
+  available?: boolean
+  timeZone?: string
+  start?: string
+  end?: string
+  suggestions?: unknown[]
+}
+
 export class OpenAIRealtimeAgent implements AgentAdapter {
   private pc: RTCPeerConnection | null = null
   private mic: MediaStream | null = null
@@ -23,8 +32,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
   private calendarIds: string[] | undefined
   private awaitingTool: boolean = false
-  private awaitingToolTimer: unknown = null
-  private fallbackTimer: unknown = null
+  private awaitingToolTimer: NodeJS.Timeout | null = null
+  private fallbackTimer: NodeJS.Timeout | null = null
   private lastTranscript: string = ''
   private tz: string | undefined
 
@@ -45,7 +54,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     this.calendarIds = ids && ids.length ? [...ids] : undefined
   }
 
-  private requireTool(name: 'check' | 'slots', opts?: { text?: string }) {
+  private requireTool(name: 'check' | 'slots') {
     // Cancel any current generation and require a tool call
     try { this.sendOAI({ type: 'response.cancel' }) } catch {
     // Error handled
@@ -69,7 +78,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       if (this.fallbackTimer) clearTimeout(this.fallbackTimer)
       this.fallbackTimer = setTimeout(() => {
         if (!this.awaitingTool) return
-        const parsed = this.parseSlotFromTranscript(this.lastTranscript, this.tz)
+        const parsed = this.parseSlotFromTranscript(this.lastTranscript)
         if (!parsed) return
         const organizationId = this.defaultOrgId
         const calendarId = this.defaultCalendarId
@@ -131,7 +140,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     })
   }
 
-  private parseSlotFromTranscript(transcript: string, tz?: string): { start: string; end: string } | null {
+  private parseSlotFromTranscript(transcript: string): { start: string; end: string } | null {
     // Simple time parser for fallback - tries to extract a time from the transcript
     const timeMatch = transcript.match(/\b(\d{1,2})(?::(\d{2}))?\s?(am|pm|AM|PM)?\b/i)
     if (!timeMatch) return null
@@ -452,20 +461,20 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         // Process the result and prepare our response BEFORE sending tool result
         let spokenResponse = ''
         try {
-          if ((res as any)?.error === 'broad_window') {
+          if ((res as AvailabilityResult)?.error === 'broad_window') {
             // Don't speak, just trigger slots tool
             await this.sendToolResult(callId, res)
             this.requireTool('slots')
             return
-          } else if ((res as any)?.available === true) {
-            const tz = (res as any)?.timeZone
-            const s = (res as any)?.start || args.start
-            const e = (res as any)?.end || args.end
+          } else if ((res as AvailabilityResult)?.available === true) {
+            const tz = (res as AvailabilityResult)?.timeZone
+            const s = (res as AvailabilityResult)?.start || args.start
+            const e = (res as AvailabilityResult)?.end || args.end
             spokenResponse = `Yes, ${this.fmtRange(s, e, tz)} is available. Would you like me to book it?`
-          } else if ((res as any)?.available === false) {
-            const tz = (res as any)?.timeZone
-            const requestedStart = (res as any)?.start || args.start
-            const requestedEnd = (res as any)?.end || args.end
+          } else if ((res as AvailabilityResult)?.available === false) {
+            const tz = (res as AvailabilityResult)?.timeZone
+            const requestedStart = (res as AvailabilityResult)?.start || args.start
+            const requestedEnd = (res as AvailabilityResult)?.end || args.end
             const requestedTime = this.fmtRange(requestedStart, requestedEnd, tz)
             
             // Get alternative slots for the same day

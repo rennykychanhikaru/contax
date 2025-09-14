@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { OpenAIRealtimeAgent } from '../lib/agent/openai-realtime'
 import Link from 'next/link'
+import { Phone, Mic, PhoneOff, Eye, EyeOff, Bug, Clock, Settings, ChevronDown } from 'lucide-react'
 
 // Import UI components from local
 import { Button } from './ui/button'
@@ -49,13 +50,15 @@ export function VoiceAgentStyled({
   const agentRef = useRef<OpenAIRealtimeAgent | null>(null)
   const [debugOpen, setDebugOpen] = useState(false)
   const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: unknown }>>([])
-  const [testResult,] = useState<unknown>(null)
+  const [testResult,] = useState<{ usedGoogleCalendars?: string[], [key: string]: unknown } | null>(null)
   const [agentSays, setAgentSays] = useState<string[]>([])
   const [actualAgentTranscript, setActualAgentTranscript] = useState<string[]>([])
   const [availableSlots, setAvailableSlots] = useState<Array<{ start: string; end: string }>>([])
   const [slotsTz, setSlotsTz] = useState<string | null>(null)
   const [showUserTranscript,] = useState<boolean>(false)
   const [showAgentTranscript, setShowAgentTranscript] = useState<boolean>(true)
+  const [calendarId, setCalendarId] = useState<string>('primary')
+  const [org, setOrg] = useState<{ id: string; name: string } | null>(null)
 
   useEffect(() => {
     agentRef.current = new OpenAIRealtimeAgent({
@@ -67,8 +70,8 @@ export function VoiceAgentStyled({
       },
       onToolEvent: (e) => {
         setToolEvents((prev) => [...prev.slice(-19), { t: Date.now(), data: e }])
-        if (e.kind === 'event' && e.type === 'spoken' && (e as any).text) {
-          setAgentSays((prev) => [...prev, String((e as any).text)])
+        if (e.kind === 'event' && e.type === 'spoken' && (e as { text?: string }).text) {
+          setAgentSays((prev) => [...prev, String((e as { text?: string }).text)])
         }
       },
       onSlots: (slots, tz) => {
@@ -110,12 +113,12 @@ export function VoiceAgentStyled({
         .then((j) => {
           if (!j?.calendars) return
           setCalendars(j.calendars)
-          const defaults = j.calendars.filter((c: unknown) => c.selected || c.primary).map((c: unknown) => c.id)
-          const sel = defaults.length ? defaults : j.calendars.map((c: unknown) => c.id)
+          const defaults = j.calendars.filter((c: GCalendar) => c.selected || c.primary).map((c: GCalendar) => c.id)
+          const sel = defaults.length ? defaults : j.calendars.map((c: GCalendar) => c.id)
           const nextSel = selectedCalIds.length ? selectedCalIds : sel
           setSelectedCalIds(nextSel)
           agentRef.current?.setCalendarIds(useUnion ? nextSel : [calendarId])
-          const primary = j.calendars.find((c: unknown) => c.primary) || j.calendars[0]
+          const primary = j.calendars.find((c: GCalendar) => c.primary) || j.calendars[0]
           if (primary) {
             setCalendarId(primary.id)
             if (primary.timeZone) setCalendarTz(primary.timeZone)
@@ -415,7 +418,7 @@ export function VoiceAgentStyled({
                   <pre className="text-xs whitespace-pre-wrap overflow-x-auto">
                     {JSON.stringify(testResult, null, 2)}
                   </pre>
-                  {Array.isArray(testResult?.usedGoogleCalendars) && (
+                  {testResult && Array.isArray(testResult.usedGoogleCalendars) && (
                     <div className="mt-2 text-xs">
                       <strong>Calendars considered:</strong> {testResult.usedGoogleCalendars.join(', ')}
                     </div>
@@ -430,11 +433,4 @@ export function VoiceAgentStyled({
   )
 }
 
-// Helper component for organization bar
-function OrgBar({}: {
-  org: { id: string; name: string } | null
-  setOrg: (org: { id: string; name: string } | null) => void
-  calendarId: string
-}) {
-  return null // This functionality is integrated into the main component
-}
+// Helper component for organization bar removed - functionality integrated into main component

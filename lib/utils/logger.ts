@@ -16,7 +16,7 @@ export interface LogContext {
   agentId?: string;
   component?: string;
   action?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 class Logger {

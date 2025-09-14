@@ -42,15 +42,15 @@ export interface AgentCalendarIntegration {
 export async function getAgentCalendarTokens(agentId: string): Promise<AgentCalendarIntegration | null> {
   const supabase = await createClient();
   
-  const { error } = await supabase
+  const { data, error } = await supabase
     .rpc('get_agent_google_tokens', { p_agent_id: agentId })
     .single();
-    
+
   if (error || !data) {
     console.error('Error getting agent calendar tokens:', error);
     return null;
   }
-  
+
   // Check if token needs refresh
   const tokenData = data as AgentCalendarIntegration;
   if (tokenData.is_expired && tokenData.refresh_token) {
@@ -88,7 +88,7 @@ export async function refreshAgentToken(
   const { error } = await supabase.rpc('store_agent_google_tokens', {
     p_agent_id: agentId,
     p_access_token: newTokenData.access_token,
-    p_refresh_token: (newTokenData as any).refresh_token || integration.refresh_token,
+    p_refresh_token: (newTokenData as { refresh_token?: string }).refresh_token || integration.refresh_token,
     p_expires_in: newTokenData.expires_in,
     p_email: integration.calendar_email,
     p_calendar_id: integration.calendar_id

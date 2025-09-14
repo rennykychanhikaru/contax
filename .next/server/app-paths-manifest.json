@@ -1,1 +1,8 @@
-{}
+{
+  "/api/agents/default/route": "app/api/agents/default/route.js",
+  "/api/org/default/route": "app/api/org/default/route.js",
+  "/api/agents/[agent_id]/calendar/status/route": "app/api/agents/[agent_id]/calendar/status/route.js",
+  "/api/agents/[agent_id]/calendar/list/route": "app/api/agents/[agent_id]/calendar/list/route.js",
+  "/agent-settings/page": "app/agent-settings/page.js",
+  "/(home)/page": "app/(home)/page.js"
+}

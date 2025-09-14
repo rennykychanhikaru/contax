@@ -31,7 +31,7 @@ export interface WebhookLogEntry {
   ip_address: string
   user_agent: string | null
   request_headers: Record<string, unknown>
-  request_body: any
+  request_body: unknown
   response_status: number
   error_message?: string
   processing_time_ms: number
@@ -71,7 +71,7 @@ function getClientIp(req: NextRequest): string {
 export async function validateWebhookRequest(
   token: string,
   request: NextRequest,
-  requestBody: any
+  requestBody: unknown
 ): Promise<WebhookValidationResult> {
   const startTime = Date.now()
   
@@ -294,7 +294,7 @@ export async function validateWebhookRequest(
  * Log webhook attempt for audit trail
  */
 async function logWebhookAttempt(
-  supabase: any,
+  supabase: unknown,
   logEntry: WebhookLogEntry
 ): Promise<void> {
   try {
@@ -329,7 +329,7 @@ async function logWebhookAttempt(
  * Increment webhook failure count
  */
 async function incrementWebhookFailures(
-  supabase: any,
+  supabase: unknown,
   organizationId: string
 ): Promise<void> {
   try {

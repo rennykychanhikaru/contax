@@ -345,7 +345,7 @@ export const ValidationHelpers = {
  * Error handler wrapper for async API route handlers
  * Catches and formats unhandled errors
  */
-export function withErrorHandler<T extends any[], R>(
+export function withErrorHandler<T extends unknown[], R>(
   handler: (...args: T) => Promise<R>
 ) {
   return async (...args: T): Promise<R | NextResponse<ApiErrorResponse>> => {

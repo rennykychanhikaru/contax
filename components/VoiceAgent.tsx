@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { OpenAIRealtimeAgent } from '../lib/agent/openai-realtime'
 import { CalendarStatus } from './CalendarStatus'
+import { Phone, Mic, PhoneOff, Eye, EyeOff, TestTube, Calendar, ChevronDown } from 'lucide-react'
 
 // Import UI components
 import { Button } from './ui/button'
@@ -16,12 +17,16 @@ import { Badge } from './ui/badge'
 import { Alert, AlertDescription } from './ui/alert'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible'
 
-  connected: boolean
-  hasToken: boolean
-  scopes?: string[]
-  calendars?: { id: string; summary: string; primary?: boolean }[]
-  primaryReachable?: boolean
-  errors?: { step: string; message: string }[]
+interface CalendarItem {
+  id: string
+  summary: string
+  primary?: boolean
+  selected?: boolean
+}
+
+interface TestResult {
+  usedGoogleCalendars?: string[]
+  [key: string]: unknown
 }
 
 type Props = { systemPrompt: string; greeting?: string; language?: string }
@@ -38,7 +43,7 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
   const agentRef = useRef<OpenAIRealtimeAgent | null>(null)
   const [debugOpen, setDebugOpen] = useState(false)
   const [toolEvents, setToolEvents] = useState<Array<{ t: number; data: unknown }>>([])
-  const [testResult, setTestResult] = useState<unknown>(null)
+  const [testResult, setTestResult] = useState<TestResult | null>(null)
   const [agentSays, setAgentSays] = useState<string[]>([])
   const [actualAgentTranscript, setActualAgentTranscript] = useState<string[]>([])
   const [availableSlots, setAvailableSlots] = useState<Array<{ start: string; end: string }>>([])
@@ -57,8 +62,8 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
       },
       onToolEvent: (e) => {
         setToolEvents((prev) => [...prev.slice(-19), { t: Date.now(), data: e }])
-        if (e.kind === 'event' && e.type === 'spoken' && (e as any).text) {
-          setAgentSays((prev) => [...prev, String((e as any).text)])
+        if (e.kind === 'event' && e.type === 'spoken' && (e as { text?: string }).text) {
+          setAgentSays((prev) => [...prev, String((e as { text?: string }).text)])
         }
       },
       onSlots: (slots, tz) => {
@@ -95,13 +100,13 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
         if (!j?.calendars) return
         setCalendars(j.calendars)
         // Default to all calendars the user has selected in Google, plus primary
-        const defaults = j.calendars.filter((c: unknown) => c.selected || c.primary).map((c: unknown) => c.id)
-        const sel = defaults.length ? defaults : j.calendars.map((c: unknown) => c.id)
+        const defaults = j.calendars.filter((c: CalendarItem) => c.selected || c.primary).map((c: CalendarItem) => c.id)
+        const sel = defaults.length ? defaults : j.calendars.map((c: CalendarItem) => c.id)
         // If we have a persisted selection, prefer it; else default
         const nextSel = selectedCalIds.length ? selectedCalIds : sel
         setSelectedCalIds(nextSel)
         agentRef.current?.setCalendarIds(useUnion ? nextSel : [calendarId])
-        const primary = j.calendars.find((c: unknown) => c.primary) || j.calendars[0]
+        const primary = j.calendars.find((c: CalendarItem) => c.primary) || j.calendars[0]
         if (primary) {
           setCalendarId(primary.id)
           if (primary.timeZone) setCalendarTz(primary.timeZone)
@@ -397,7 +402,7 @@ export function VoiceAgent({ systemPrompt, greeting, language = 'en-US' }: Props
                 <h4 className="font-medium text-sm mb-2">Test Availability Result</h4>
                 <div className="bg-muted p-3 rounded">
                   <pre className="text-xs whitespace-pre-wrap overflow-x-auto">{JSON.stringify(testResult, null, 2)}</pre>
-                  {Array.isArray(testResult?.usedGoogleCalendars) && (
+                  {testResult && Array.isArray(testResult.usedGoogleCalendars) && (
                     <div className="mt-2 pt-2 border-t">
                       <strong className="text-sm">Calendars considered:</strong>{' '}
                       <span className="text-sm text-muted-foreground">

@@ -36,7 +36,7 @@ export default async function Header() {
       .eq('user_id', user.id)
       .single();
     
-    organizationName = (membership?.organizations as any)?.name || null;
+    organizationName = (membership?.organizations as { name: string })?.name || null;
   }
 
   return (

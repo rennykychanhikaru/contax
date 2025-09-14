@@ -1,55 +1,15 @@
 {
   "pages": {
-    "/api/webhook/agent/[token]/trigger-call/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/webhook/agent/[token]/trigger-call/route.js"
-    ],
     "/layout": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/css/app/layout.css",
       "static/chunks/app/layout.js"
     ],
-    "/settings/page": [
+    "/agent-settings/page": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/settings/page.js"
-    ],
-    "/api/calendar/status/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/calendar/status/route.js"
-    ],
-    "/api/calendar/list/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/calendar/list/route.js"
-    ],
-    "/api/settings/twilio/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/settings/twilio/route.js"
-    ],
-    "/api/webhook/outgoing-call/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/webhook/outgoing-call/route.js"
-    ],
-    "/api/webhook/call-status/route": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/api/webhook/call-status/route.js"
-    ],
-    "/(home)/layout": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(home)/layout.js"
-    ],
-    "/(home)/page": [
-      "static/chunks/webpack.js",
-      "static/chunks/main-app.js",
-      "static/chunks/app/(home)/page.js"
+      "static/chunks/app/agent-settings/page.js"
     ],
     "/api/agents/default/route": [
       "static/chunks/webpack.js",
@@ -61,20 +21,25 @@
       "static/chunks/main-app.js",
       "static/chunks/app/api/agents/[agent_id]/calendar/status/route.js"
     ],
-    "/api/org/default/route": [
+    "/(home)/layout": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/api/org/default/route.js"
+      "static/chunks/app/(home)/layout.js"
+    ],
+    "/(home)/page": [
+      "static/chunks/webpack.js",
+      "static/chunks/main-app.js",
+      "static/chunks/app/(home)/page.js"
     ],
     "/api/agents/[agent_id]/calendar/list/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
       "static/chunks/app/api/agents/[agent_id]/calendar/list/route.js"
     ],
-    "/agent-settings/page": [
+    "/api/org/default/route": [
       "static/chunks/webpack.js",
       "static/chunks/main-app.js",
-      "static/chunks/app/agent-settings/page.js"
+      "static/chunks/app/api/org/default/route.js"
     ]
   }
 }
