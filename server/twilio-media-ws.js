@@ -72,6 +72,36 @@ function downsample16kTo8k(pcm16k) {
   return out
 }
 
+// µ-law decode for inbound Twilio audio
+function muLawToPcm16(mu) {
+  mu = ~mu & 0xff
+  const sign = mu & 0x80
+  const exponent = (mu >> 4) & 0x07
+  const mantissa = mu & 0x0f
+  let sample = ((mantissa << 3) + BIAS) << (exponent + 2)
+  sample -= BIAS
+  return sign ? -sample : sample
+}
+function decodeMuLawToPcm16(muArr) {
+  const out = new Int16Array(muArr.length)
+  for (let i = 0; i < muArr.length; i++) out[i] = muLawToPcm16(muArr[i])
+  return out
+}
+
+function upsample8kTo16k(pcm8k) {
+  const out = new Int16Array(pcm8k.length * 2)
+  for (let i = 0; i < pcm8k.length - 1; i++) {
+    const a = pcm8k[i]
+    const b = pcm8k[i + 1]
+    out[i * 2] = a
+    out[i * 2 + 1] = ((a + b) / 2) | 0
+  }
+  const last = pcm8k[pcm8k.length - 1] || 0
+  out[out.length - 2] = last
+  out[out.length - 1] = last
+  return out
+}
+
 function uint8ToB64(arr) {
   return Buffer.from(arr).toString('base64')
 }
@@ -85,7 +115,10 @@ function sendTwilioAudio(ws, streamSid, muLawBytes) {
 // --- Server setup ---
 const PORT = parseInt(process.env.TWILIO_WS_PORT || '8787', 10)
 const server = http.createServer()
-const wss = new WebSocket.Server({ server })
+// Disable per-message compression to reduce latency jitter
+const wss = new WebSocket.Server({ server, perMessageDeflate: false })
+// Ensure TCP_NODELAY (no Nagle) on incoming sockets
+server.on('connection', (sock) => { try { sock.setNoDelay(true) } catch {} })
 
 // Supabase admin client
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -106,6 +139,114 @@ wss.on('connection', (ws) => {
   let orgId
   let agentId
   let selectedVoice = 'sage'
+  let greetingDone = false
+
+  // --- OpenAI Realtime state ---
+  let oai = { ws: /** @type {import('ws')} */ (null), ready: false, appendPending: 0, lastCommitTs: 0 }
+
+  // Outbound pacing queue (20ms per frame) with light jitter buffer and telemetry
+  const outboundQueue = [] /** @type {Uint8Array[]} */
+  let txFrames = 0
+  let lastTxLog = Date.now()
+  let startedPacing = false
+  const PREBUFFER_FRAMES = 8 // ~160ms prebuffer
+  const sendTicker = setInterval(() => {
+    if (!streamSid) return
+    // Wait until we have a small prebuffer to avoid initial choppiness
+    if (!startedPacing) {
+      if (outboundQueue.length >= PREBUFFER_FRAMES) startedPacing = true
+      else return
+    }
+    const frame = outboundQueue.shift()
+    if (!frame) return
+    sendTwilioAudio(ws, streamSid, frame)
+    txFrames++
+    const now = Date.now()
+    if (now - lastTxLog > 1000) {
+      if (txFrames > 0) console.log('[tx.frames]', txFrames, 'in last second')
+      txFrames = 0
+      lastTxLog = now
+    }
+  }, 20)
+
+  function enqueueMu(mu) { outboundQueue.push(mu) }
+
+  function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt) {
+    if (!OAI_KEY) return
+    try {
+      const model = process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-realtime-preview-2024-12-17'
+      const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
+      const rws = new WebSocket(url, { headers: { Authorization: `Bearer ${OAI_KEY}`, 'OpenAI-Beta': 'realtime=v1' }, perMessageDeflate: false })
+      rws.on('open', () => {
+        oai.ws = rws
+        oai.ready = true
+        // Ensure the session is configured to output μ-law 8k audio and desired language
+        const lang = languageCode || 'en-US'
+        const basePrompt = agentPrompt || 'You are a helpful voice assistant.'
+        const sessionInstructions = `${basePrompt}\n\nAlways and only speak in ${lang}. Do not switch languages even if the caller speaks another language; instead, politely ask to continue in ${lang}. Keep responses concise and conversational. When the caller pauses, wait rather than interrupting.`
+        rws.send(JSON.stringify({
+          type: 'session.update',
+          session: {
+            voice: voice || 'sage',
+            modalities: ['audio', 'text'],
+            output_audio_format: 'g711_ulaw',
+            input_audio_format: 'g711_ulaw',
+            instructions: sessionInstructions
+          }
+        }))
+        console.log('[oai.open] realtime connected')
+        // Have the model speak the greeting first
+        if (greetingText) {
+          const safe = String(greetingText).replace(/"/g, '\\"')
+          const instr = `Say exactly: "${safe}". Then stop speaking and wait for the caller.`
+          rws.send(JSON.stringify({ type: 'response.create', response: { instructions: instr, modalities: ['audio','text'] } }))
+        }
+      })
+      rws.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString('utf-8'))
+          if (msg?.type) {
+            // Lightweight event tracing to diagnose missing audio
+            if (
+              msg.type !== 'response.output_audio.delta' &&
+              msg.type !== 'response.audio.delta' &&
+              msg.type !== 'input_audio_buffer.append' &&
+              msg.type !== 'transcript'
+            ) {
+              console.log('[oai.event]', msg.type)
+            }
+          }
+          // Handle both legacy and current audio delta events; with g711_ulaw we can forward directly
+          if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
+            const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
+            if (!b64) return
+            const mu = Buffer.from(b64, 'base64')
+            for (let i = 0; i < mu.length; i += 160) {
+              enqueueMu(mu.subarray(i, i + 160))
+            }
+          }
+          // Mark greeting as complete on first completed response
+          if (!greetingDone && (msg?.type === 'response.completed' || msg?.type === 'response.audio.done' || msg?.type === 'response.done')) {
+            greetingDone = true
+            console.log('[oai.greeting.completed]')
+          }
+          if (msg?.type === 'error' || msg?.error) {
+            console.warn('[oai.msg.error]', msg?.error || msg)
+          }
+        } catch {}
+      })
+      rws.on('close', () => { oai.ready = false; console.log('[oai.close]') })
+      rws.on('error', (e) => { console.warn('[oai.error]', e?.message) })
+    } catch (e) {
+      console.warn('[oai.connect.error]', e?.message)
+    }
+  }
+
+  function appendCallerMuLawBase64ToOAI(b64) {
+    if (!oai.ready || !oai.ws) return
+    // Let Realtime handle VAD and commits; do not force commit/response here
+    oai.ws.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: b64 }))
+  }
 
   ws.on('message', async (data) => {
     try {
@@ -120,65 +261,35 @@ wss.on('connection', (ws) => {
         selectedVoice = params['voice'] || 'sage'
         console.log('[twilio.stream.start]', { callSid, streamSid, orgId, agentId, voice: selectedVoice })
 
-        // Fetch agent greeting
+        // Fetch agent greeting, language, and prompt
         let greeting = 'Hello! How can I help you today?'
+        let agentLanguage = 'en-US'
+        let agentPrompt = 'You are a helpful voice assistant.'
         if (orgId && agentId) {
           const { data: agent } = await supabase
             .from('agent_configurations')
-            .select('greeting')
+            .select('greeting, language, prompt')
             .eq('organization_id', orgId)
             .eq('id', agentId)
             .single()
           if (agent && agent.greeting) greeting = agent.greeting
+          if (agent && agent.language) agentLanguage = agent.language
+          if (agent && agent.prompt) agentPrompt = agent.prompt
         }
 
-        // Synthesize greeting via OpenAI TTS and stream to Twilio
-        if (OAI_KEY) {
-          try {
-            const res = await fetch('https://api.openai.com/v1/audio/speech', {
-              method: 'POST',
-              headers: { Authorization: `Bearer ${OAI_KEY}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: selectedVoice, input: greeting, format: 'wav' })
-            })
-            console.log('[tts.response]', res.status, res.statusText)
-            if (res.ok) {
-              const buf = Buffer.from(await res.arrayBuffer())
-              // Minimal WAV parsing
-              const sampleRate = buf.readUInt32LE(24)
-              // Find 'data' chunk
-              let dataOffset = 44
-              for (let i = 12; i < 44; i++) {
-                if (buf.readUInt32BE(i) === 0x64617461) { // 'data'
-                  dataOffset = i + 8
-                  break
-                }
-              }
-              const pcmBytes = buf.subarray(dataOffset)
-              const pcm16 = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2))
-              const pcm8k = (sampleRate === 8000) ? pcm16 : downsample16kTo8k(pcm16)
-              const frame = 160 // 20ms @ 8kHz
-              let frames = 0
-              for (let i = 0; i < pcm8k.length; i += frame) {
-                const slice = pcm8k.subarray(i, i + frame)
-                const mu = encodePcm16ToMuLaw(slice)
-                sendTwilioAudio(ws, streamSid, mu)
-                await new Promise((r) => setTimeout(r, 20))
-                frames++
-              }
-              console.log('[tts.stream.sent_frames]', frames)
-            } else {
-              const t = await res.text().catch(() => '')
-              console.warn('[tts.response.error]', t.slice(0, 256))
-            }
-          } catch (e) {
-            console.warn('[tts.error]', e?.message)
-          }
-        }
+        // Connect OpenAI Realtime and have it speak the greeting first
+        connectOpenAIRealtime(selectedVoice, greeting, agentLanguage, agentPrompt)
+        // Safety timer to avoid blocking if greeting doesn't complete
+        setTimeout(() => { if (!greetingDone) { greetingDone = true; console.log('[oai.greeting.timeout]') } }, 12000)
       }
 
       if (msg.event === 'media') {
-        // Future: forward caller audio to realtime LLM and stream response back
-        // We intentionally do nothing here for now
+        if (!greetingDone) return
+        try {
+          if (!oai.ready) return
+          // Twilio payload is μ-law 8k base64
+          appendCallerMuLawBase64ToOAI(msg.media.payload)
+        } catch {}
       }
 
       if (msg.event === 'stop') {
@@ -188,9 +299,122 @@ wss.on('connection', (ws) => {
       // Ignore JSON parse errors to keep stream alive
     }
   })
+
+  ws.on('close', () => {
+    clearInterval(sendTicker)
+    try { if (oai.ws) oai.ws.close() } catch {}
+  })
 })
 
 server.listen(PORT, () => {
   console.log(`[twilio-ws] listening on ws://localhost:${PORT}`)
   console.log('[twilio-ws] expose this port with ngrok: ngrok http', PORT)
 })
+
+// ---------------- Utilities ----------------
+function isWavBuffer(buf) {
+  return buf.length >= 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WAVE'
+}
+
+async function fetchWavTTS({ apiKey, voice, text }) {
+  // Attempt 1: gpt-4o-mini-tts with Accept audio/wav
+  const attempt1 = await fetch('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'Accept': 'audio/wav' },
+    body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice, input: text, format: 'wav' })
+  })
+  const ct1 = attempt1.headers.get('content-type') || ''
+  console.log('[tts.attempt1]', attempt1.status, attempt1.statusText, ct1)
+  if (attempt1.ok) {
+    const buf1 = Buffer.from(await attempt1.arrayBuffer())
+    console.log('[tts.attempt1.magic]', buf1.subarray(0, 4).toString('ascii'))
+    if (isWavBuffer(buf1)) return buf1
+  } else {
+    const t = await attempt1.text().catch(() => '')
+    console.warn('[tts.attempt1.error]', t.slice(0, 256))
+  }
+
+  // Attempt 2: tts-1 (more strict WAV support), fallback voice 'alloy'
+  const attempt2 = await fetch('https://api.openai.com/v1/audio/speech', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', 'Accept': 'audio/wav' },
+    body: JSON.stringify({ model: 'tts-1', voice: voice || 'alloy', input: text, format: 'wav' })
+  })
+  const ct2 = attempt2.headers.get('content-type') || ''
+  console.log('[tts.attempt2]', attempt2.status, attempt2.statusText, ct2)
+  if (attempt2.ok) {
+    const buf2 = Buffer.from(await attempt2.arrayBuffer())
+    console.log('[tts.attempt2.magic]', buf2.subarray(0, 4).toString('ascii'))
+    if (isWavBuffer(buf2)) return buf2
+    const t = buf2.subarray(0, 64).toString('hex')
+    console.warn('[tts.attempt2.nonwav.prefix]', t)
+  } else {
+    const t = await attempt2.text().catch(() => '')
+    console.warn('[tts.attempt2.error]', t.slice(0, 256))
+  }
+
+  return null
+}
+
+function parseWav(buf) {
+  // Basic RIFF/WAVE parser, 16-bit PCM only
+  if (buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('Not a RIFF/WAVE file')
+  }
+  let offset = 12
+  let fmt = null
+  let dataOffset = -1
+  let dataSize = 0
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString('ascii', offset, offset + 4)
+    const size = buf.readUInt32LE(offset + 4)
+    if (id === 'fmt ') {
+      fmt = {
+        audioFormat: buf.readUInt16LE(offset + 8),
+        channels: buf.readUInt16LE(offset + 10),
+        sampleRate: buf.readUInt32LE(offset + 12),
+        byteRate: buf.readUInt32LE(offset + 16),
+        blockAlign: buf.readUInt16LE(offset + 20),
+        bitsPerSample: buf.readUInt16LE(offset + 22)
+      }
+    } else if (id === 'data') {
+      dataOffset = offset + 8
+      dataSize = size
+    }
+    offset += 8 + size
+  }
+  if (!fmt) throw new Error('WAV fmt chunk not found')
+  if (dataOffset < 0) throw new Error('WAV data chunk not found')
+  if (fmt.audioFormat !== 1) throw new Error(`Unsupported WAV format: ${fmt.audioFormat}`)
+  if (fmt.bitsPerSample !== 16) throw new Error(`Unsupported WAV bitsPerSample: ${fmt.bitsPerSample}`)
+
+  const bytes = buf.subarray(dataOffset, dataOffset + dataSize)
+  // Convert interleaved channels to mono 16-bit PCM
+  const totalSamples = Math.floor(bytes.length / 2)
+  const samplesPerChannel = Math.floor(totalSamples / fmt.channels)
+  const out = new Int16Array(samplesPerChannel)
+  for (let i = 0; i < samplesPerChannel; i++) {
+    let acc = 0
+    for (let c = 0; c < fmt.channels; c++) {
+      acc += bytes.readInt16LE((i * fmt.channels + c) * 2)
+    }
+    out[i] = (acc / fmt.channels) | 0
+  }
+  return { sampleRate: fmt.sampleRate, channels: fmt.channels, bitsPerSample: fmt.bitsPerSample, pcm16Mono: out }
+}
+
+function resamplePcm16(pcm, fromRate, toRate) {
+  if (fromRate === toRate) return pcm
+  const ratio = toRate / fromRate
+  const outLen = Math.max(1, Math.round(pcm.length * ratio))
+  const out = new Int16Array(outLen)
+  for (let i = 0; i < outLen; i++) {
+    const pos = i / ratio
+    const i0 = Math.floor(pos)
+    const i1 = Math.min(i0 + 1, pcm.length - 1)
+    const t = pos - i0
+    const s = (1 - t) * pcm[i0] + t * pcm[i1]
+    out[i] = s | 0
+  }
+  return out
+}
