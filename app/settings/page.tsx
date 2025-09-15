@@ -4,7 +4,7 @@ import { redirect } from 'next/navigation';
 import TwilioIntegrationForm from './TwilioIntegrationForm';
 import CalendarSettings from './CalendarSettings';
 import Header from '../../components/Header';
-import { OutgoingCallTrigger } from '../../components/OutgoingCallTrigger';
+import OutgoingCallTrigger from '../../components/OutgoingCallTrigger';
 
 export default async function SettingsPage() {
   const cookieStore = await cookies();
@@ -62,7 +62,7 @@ export default async function SettingsPage() {
                 <p className="text-sm text-gray-400 mb-4">
                   Test your Twilio integration by making an outgoing call that connects to your voice agent.
                 </p>
-                <OutgoingCallTrigger userId={user.id} />
+                <OutgoingCallTrigger />
               </div>
             </section>
           </div>
