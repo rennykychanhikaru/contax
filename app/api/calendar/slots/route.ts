@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { getServiceAccount } from '@/lib/google';
 import { JWT } from 'google-auth-library';
-import { TimeSlot } from '@/app/types/api';
+import { TimeSlot } from '@/types/api';
 
 interface GoogleEvent {
   start?: { dateTime?: string; date?: string };
   end?: { dateTime?: string; date?: string };
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   const body = await req.json();
   const { date } = body;
   // const organizationId = body.organizationId || null; // Commented as not currently used

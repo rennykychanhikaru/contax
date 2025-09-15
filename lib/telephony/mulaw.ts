@@ -12,24 +12,24 @@ const CLIP = 32635;
 
 // PCM16 (Int16) -> µ-law (byte)
 export function pcm16ToMuLaw(sample: number): number {
-  let sign = (sample >> 8) & 0x80;
+  const sign = (sample >> 8) & 0x80;
   if (sign !== 0) sample = -sample;
   if (sample > CLIP) sample = CLIP;
 
   sample = sample + BIAS;
   let exponent = 7;
-  for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) {}
-  let mantissa = (sample >> ((exponent === 0) ? 4 : (exponent + 3))) & 0x0f;
-  let muLawByte = ~(sign | (exponent << 4) | mantissa);
+  for (let expMask = 0x4000; (sample & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) { /* a-ok */ }
+  const mantissa = (sample >> ((exponent === 0) ? 4 : (exponent + 3))) & 0x0f;
+  const muLawByte = ~(sign | (exponent << 4) | mantissa);
   return muLawByte & 0xff;
 }
 
 // µ-law (byte) -> PCM16 (Int16)
 export function muLawToPcm16(mu: number): number {
   mu = ~mu;
-  let sign = (mu & 0x80);
-  let exponent = (mu >> 4) & 0x07;
-  let mantissa = mu & 0x0f;
+  const sign = (mu & 0x80);
+  const exponent = (mu >> 4) & 0x07;
+  const mantissa = mu & 0x0f;
   let sample = ((mantissa << 3) + BIAS) << (exponent + 2);
   sample -= BIAS;
   return sign ? -sample : sample;

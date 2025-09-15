@@ -43,7 +43,7 @@ export async function POST(
     stream.parameter({ name: 'agentId', value: agent.id });
     stream.parameter({ name: 'direction', value: 'outbound' });
     // Allow voice to be overridden in the future; default to 'sage' for now
-    stream.parameter({ name: 'voice', value: (agent as any).voice || 'sage' });
+    stream.parameter({ name: 'voice', value: (agent as { voice?: string }).voice || 'sage' });
     // Fallback: if Stream handshake fails, Twilio should continue to next verb.
     response.say({ voice: 'alice', language: agent.language || 'en-US' }, agent.greeting || 'Hello! How can I help you today?');
     response.hangup();

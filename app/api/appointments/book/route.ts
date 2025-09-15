@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServiceAccount } from '@/lib/google';
 import { JWT } from 'google-auth-library';
-import { TimeSlot } from '@/app/types/api';
+import { TimeSlot } from '@/types/api';
 
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   const body = await req.json();
   const { date, slot, name, email } = body;
 

@@ -51,7 +51,7 @@ export default async function AgentSettingsPage() {
               <p className="text-sm text-gray-400 mb-4">
                 Customize how your voice agent responds to callers and handles scheduling requests.
               </p>
-              <AgentSettingsForm userId={user.id} />
+              <AgentSettingsForm  />
             </section>
 
             <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
@@ -59,7 +59,7 @@ export default async function AgentSettingsPage() {
               <p className="text-sm text-gray-400 mb-4">
                 Configure which communication channels your agent can use to respond to inquiries.
               </p>
-              <AgentResponseTypeForm userId={user.id} />
+              <AgentResponseTypeForm  />
             </section>
           </div>
         </div>

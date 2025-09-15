@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { GoogleCalendar } from '@/app/types/api'
+import { GoogleCalendar } from '@/types/api'
 
 export async function GET() {
   const c = await cookies()

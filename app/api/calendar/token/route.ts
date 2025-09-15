@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   const { accessToken } = await req.json().catch(() => ({ accessToken: undefined }))
   if (!accessToken) {
     return NextResponse.json({ error: 'accessToken required' }, { status: 400 })

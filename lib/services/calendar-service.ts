@@ -20,7 +20,7 @@ export interface CalendarToken {
   expiry?: number;
 }
 
-export interface CalendarServiceResult<T = any> {
+export interface CalendarServiceResult<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;

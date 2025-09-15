@@ -16,7 +16,7 @@
 
 import { NextRequest } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { decodeMuLawToPcm16, encodePcm16ToMuLaw, downsample16kTo8k, upsample8kTo16k } from '../../../../lib/telephony/mulaw'
+import { encodePcm16ToMuLaw, downsample16kTo8k } from '../../../../lib/telephony/mulaw'
 
 export const runtime = 'edge'
 
@@ -41,6 +41,7 @@ type TwilioStopEvent = { event: 'stop' }
 type TwilioEvent = TwilioStartEvent | TwilioMediaEvent | TwilioStopEvent | { event: string; [k: string]: unknown }
 
 function okWs(ws: WebSocket) {
+  // @ts-expect-error
   return new Response(null, { status: 101, webSocket: ws as any })
 }
 
@@ -58,12 +59,12 @@ function sendTwilioAudio(ws: WebSocket, streamSid: string, muLawBytes: Uint8Arra
 
 // Full duplex realtime bridge will be added later. For now we handle greeting playback.
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   if (req.headers.get('upgrade') !== 'websocket') {
     return new Response('Expected WebSocket', { status: 426 })
   }
 
-  const pair = new (globalThis as any).WebSocketPair()
+  const pair = new (globalThis as { WebSocketPair: new () => { 0: WebSocket, 1: WebSocket } }).WebSocketPair()
   const [client, server] = [pair[0], pair[1]] as [WebSocket, WebSocket]
 
   let streamSid = ''

@@ -8,6 +8,47 @@ export interface ApiResponse<T = unknown> {
   message?: string;
 }
 
+// Google Calendar Types
+export interface TimeSlot {
+  start: string;
+  end: string;
+}
+
+export interface GoogleCalendar {
+  kind?: string;
+  etag?: string;
+  id: string;
+  summary: string;
+  description?: string;
+  timeZone?: string;
+  accessRole: string;
+  primary?: boolean;
+  selected?: boolean;
+  backgroundColor?: string;
+  foregroundColor?: string;
+}
+
+export interface CalendarEvent {
+  summary: string;
+  description: string;
+  start: {
+    dateTime: string;
+    timeZone: string;
+  };
+  end: {
+    dateTime: string;
+    timeZone: string;
+  };
+  conferenceData?: {
+    createRequest: {
+      requestId: string;
+      conferenceSolutionKey: {
+        type: string;
+      };
+    };
+  };
+}
+
 // Calendar API Types
 export interface CheckAvailabilityRequest {
   organizationId?: string;
@@ -19,7 +60,7 @@ export interface CheckAvailabilityRequest {
 
 export interface CheckAvailabilityResponse {
   available: boolean;
-  conflicts?: Array<{ start: string; end: string }>;
+  conflicts?: TimeSlot[];
   timeZone?: string;
   start?: string;
   end?: string;
@@ -39,7 +80,7 @@ export interface GetSlotsRequest {
 }
 
 export interface GetSlotsResponse {
-  slots: Array<{ start: string; end: string }>;
+  slots: TimeSlot[];
   timeZone?: string;
   error?: string;
 }
@@ -60,16 +101,7 @@ export interface CalendarStatusResponse {
 }
 
 export interface CalendarListResponse {
-  calendars: Array<{
-    id: string;
-    summary: string;
-    primary?: boolean;
-    accessRole?: string;
-    selected?: boolean;
-    timeZone?: string;
-    backgroundColor?: string;
-    foregroundColor?: string;
-  }>;
+  calendars: GoogleCalendar[];
 }
 
 // Appointments API Types
@@ -166,6 +198,21 @@ export interface AgentConfigurationResponse {
   temperature?: number;
   top_p?: number;
   voice_id?: string;
+}
+
+// Demo Account Type
+export interface DemoAccount {
+  type: string;
+  project_id: string;
+  private_key_id: string;
+  private_key: string;
+  client_email: string;
+  client_id: string;
+  auth_uri: string;
+  token_uri: string;
+  auth_provider_x509_cert_url: string;
+  client_x509_cert_url: string;
+  universe_domain: string;
 }
 
 // Error Types

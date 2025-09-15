@@ -8,7 +8,7 @@ const CallRequestSchema = z.object({
   context: z.record(z.unknown()).optional()
 })
 
-export async function POST(req: NextRequest) {
+export async function POST(_req: NextRequest) {
   try {
     const body = await req.json()
     const validation = CallRequestSchema.safeParse(body)
