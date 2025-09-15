@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-export async function GET(_req: NextRequest) {
+export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code')
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET

@@ -68,7 +68,7 @@ function encodePcm16ToMuLaw(pcm) {
 }
 function downsample16kTo8k(pcm16k) {
   const out = new Int16Array(Math.floor(pcm16k.length / 2))
-  for (let i = 0, j = 0; j < out.length; i += 2, j++) out[j] = pcm16k[i]
+  for (let i = 0, j = 0; i < out.length; i += 2, j++) out[j] = pcm16k[i]
   return out
 }
 
@@ -118,7 +118,7 @@ const server = http.createServer()
 // Disable per-message compression to reduce latency jitter
 const wss = new WebSocket.Server({ server, perMessageDeflate: false })
 // Ensure TCP_NODELAY (no Nagle) on incoming sockets
-server.on('connection', (sock) => { try { sock.setNoDelay(true) } catch {} })
+server.on('connection', (sock) => { try { sock.setNoDelay(true) } catch (e) { /* ignore */ } })
 
 // Supabase admin client
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -198,7 +198,7 @@ wss.on('connection', (ws) => {
         // Have the model speak the greeting first
         if (greetingText) {
           const safe = String(greetingText).replace(/"/g, '\\"')
-          const instr = `Say exactly: "${safe}". Then stop speaking and wait for the caller.`
+          const instr = `Say exactly: \"${safe}\ জৈ. Then stop speaking and wait for the caller.`
           rws.send(JSON.stringify({ type: 'response.create', response: { instructions: instr, modalities: ['audio','text'] } }))
         }
       })
@@ -233,7 +233,7 @@ wss.on('connection', (ws) => {
           if (msg?.type === 'error' || msg?.error) {
             console.warn('[oai.msg.error]', msg?.error || msg)
           }
-        } catch {}
+        } catch (e) { /* ignore */ }
       })
       rws.on('close', () => { oai.ready = false; console.log('[oai.close]') })
       rws.on('error', (e) => { console.warn('[oai.error]', e?.message) })
@@ -289,11 +289,11 @@ wss.on('connection', (ws) => {
           if (!oai.ready) return
           // Twilio payload is μ-law 8k base64
           appendCallerMuLawBase64ToOAI(msg.media.payload)
-        } catch {}
+        } catch (e) { /* ignore */ }
       }
 
       if (msg.event === 'stop') {
-        try { ws.close() } catch {}
+        try { ws.close() } catch (e) { /* ignore */ }
       }
     } catch (e) {
       // Ignore JSON parse errors to keep stream alive
@@ -302,7 +302,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     clearInterval(sendTicker)
-    try { if (oai.ws) oai.ws.close() } catch {}
+    try { if (oai.ws) oai.ws.close() } catch (e) { /* ignore */ }
   })
 })
 

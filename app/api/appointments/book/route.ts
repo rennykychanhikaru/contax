@@ -3,7 +3,7 @@ import { getServiceAccount } from '@/lib/google';
 import { JWT } from 'google-auth-library';
 import { TimeSlot } from '@/types/api';
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   const body = await req.json();
   const { date, slot, name, email } = body;
 

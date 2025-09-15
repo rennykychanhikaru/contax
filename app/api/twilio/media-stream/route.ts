@@ -14,6 +14,7 @@
   - For production, consider more robust resampling, VAD, and backpressure handling.
 */
 
+
 import { NextRequest } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { encodePcm16ToMuLaw, downsample16kTo8k } from '../../../../lib/telephony/mulaw'
@@ -41,8 +42,8 @@ type TwilioStopEvent = { event: 'stop' }
 type TwilioEvent = TwilioStartEvent | TwilioMediaEvent | TwilioStopEvent | { event: string; [k: string]: unknown }
 
 function okWs(ws: WebSocket) {
-  // @ts-expect-error
-  return new Response(null, { status: 101, webSocket: ws as any })
+  // @ts-expect-error-next-line - WebSocket is not a standard property on Response
+  return new Response(null, { status: 101, webSocket: ws })
 }
 
 // Utility: send Twilio media frame (µ-law base64) back to the call stream
@@ -59,7 +60,7 @@ function sendTwilioAudio(ws: WebSocket, streamSid: string, muLawBytes: Uint8Arra
 
 // Full duplex realtime bridge will be added later. For now we handle greeting playback.
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   if (req.headers.get('upgrade') !== 'websocket') {
     return new Response('Expected WebSocket', { status: 426 })
   }

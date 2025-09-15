@@ -3,7 +3,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { TwilioTelephonyAdapter } from '../../../../lib/telephony/twilio';
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { phoneNumber, organizationId, userId, agentId } = body;

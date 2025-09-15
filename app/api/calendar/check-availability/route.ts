@@ -9,7 +9,7 @@ interface GoogleEvent {
   end?: { dateTime?: string; date?: string };
 }
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   const body = await req.json();
   const { date, agentId } = body;
 
