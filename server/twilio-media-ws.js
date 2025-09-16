@@ -128,7 +128,13 @@ wss.on('connection', (ws) => {
         // Ensure the session is configured to output μ-law 8k audio and desired language
         const lang = languageCode || 'en-US'
         const basePrompt = agentPrompt || 'You are a helpful voice assistant.'
-        const sessionInstructions = `${basePrompt}\n\nAlways and only speak in ${lang}. Do not switch languages even if the caller speaks another language; instead, politely ask to continue in ${lang}. Keep responses concise and conversational. When the caller pauses, wait rather than interrupting.`
+        let sessionInstructions = `${basePrompt}\n\nAlways and only speak in ${lang}. Do not switch languages even if the caller speaks another language; instead, politely ask to continue in ${lang}. Keep responses concise and conversational. When the caller pauses, wait rather than interrupting.`
+        
+        if (greetingText) {
+          const safeGreeting = String(greetingText).replace(/"/g, '\"')
+          sessionInstructions = 'Your first response must be to say exactly: "' + safeGreeting + '". After that, you must follow all other instructions.\n\n' + sessionInstructions
+        }
+
         rws.send(JSON.stringify({
           type: 'session.update',
           session: {
@@ -140,12 +146,6 @@ wss.on('connection', (ws) => {
           }
         }))
         console.log('[oai.open] realtime connected')
-        // Have the model speak the greeting first
-        if (greetingText) {
-          const safe = String(greetingText).replace(/"/g, '\"')
-          const instr = `Say exactly: "${safe}". Then stop speaking and wait for the caller.`
-          rws.send(JSON.stringify({ type: 'response.create', response: { instructions: instr, modalities: ['audio','text'] } }))
-        }
       })
       rws.on('message', (raw) => {
         try {
