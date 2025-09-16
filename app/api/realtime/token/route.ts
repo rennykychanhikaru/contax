@@ -11,10 +11,16 @@ export async function POST(req: NextRequest) {
   // Parse the request body to get agentId if provided
   let agentId: string | undefined
   let requestBody: Record<string, unknown> = {}
+  let systemPrompt: string | undefined
+  let greeting: string | undefined
+  let language: string | undefined
 
   try {
     requestBody = await req.json()
     agentId = requestBody.agentId as string | undefined
+    systemPrompt = (requestBody.systemPrompt as string | undefined)?.toString()
+    greeting = (requestBody.greeting as string | undefined)?.toString()
+    language = (requestBody.language as string | undefined)?.toString()
   } catch {
     // If body parsing fails, continue without agentId
   }
@@ -115,6 +121,15 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Build session instructions from provided system prompt and language.
+  // We intentionally do NOT include the greeting here, as the client sends a one-off exact greeting
+  // instruction after the session is established to avoid double-greeting.
+  const basePrompt = (systemPrompt && systemPrompt.trim()) ? systemPrompt.trim() : 'You are a helpful scheduling assistant.'
+  const lang = (language && language.trim()) ? language.trim() : undefined
+  const sessionInstructions = lang
+    ? `${basePrompt}\n\nAlways and only speak in ${lang}. Keep responses concise and conversational.`
+    : basePrompt
+
   const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
     method: 'POST',
     headers: {
@@ -124,7 +139,8 @@ export async function POST(req: NextRequest) {
     body: JSON.stringify({
       model: 'gpt-4o-realtime-preview-2024-12-17',
       modalities: ['text', 'audio'],
-      voice: voice
+      voice: voice,
+      instructions: sessionInstructions
     }),
   })
 
