@@ -45,14 +45,17 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       throw new Error('Base URL is required for outbound calls')
     }
 
-    // Create TwiML for the call. We connect the call audio to our WebSocket media-stream endpoint.
+    // Create TwiML for the call. Prefer external WS bridge if configured, otherwise use edge endpoint.
     // The assistant will speak the greeting first via the media bridge.
-    const wsHost = new URL(baseUrl).host
+    const extWsBase = process.env.TWILIO_STREAM_WSS_URL // e.g., wss://<ngrok-domain>
+    const streamUrl = extWsBase && /^wss:\/\//i.test(extWsBase)
+      ? `${extWsBase.replace(/\/$/, '')}/twilio-media`
+      : `wss://${new URL(baseUrl).host}/api/twilio/media-stream`
     const voice = options?.voice || 'sage'
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://${wsHost}/api/twilio/media-stream">
+    <Stream url="${streamUrl}">
       <Parameter name="organizationId" value="${options?.organizationId || ''}" />
       <Parameter name="agentId" value="${options?.agentId || 'default'}" />
       <Parameter name="direction" value="outbound" />

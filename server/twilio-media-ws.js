@@ -85,6 +85,8 @@ wss.on('connection', (ws) => {
   let agentId
   let selectedVoice = 'sage'
   let greetingDone = false
+  // Track tool calls by call_id
+  const toolBuffers = new Map()
 
   // --- OpenAI Realtime state ---
   let oai = { ws: /** @type {import('ws')} */ (null), ready: false, appendPending: 0, lastCommitTs: 0 }
@@ -94,7 +96,7 @@ wss.on('connection', (ws) => {
   let txFrames = 0
   let lastTxLog = Date.now()
   let startedPacing = false
-  const PREBUFFER_FRAMES = 8 // ~160ms prebuffer
+  const PREBUFFER_FRAMES = 1 // ~20ms prebuffer for lowest initial latency
   const sendTicker = setInterval(() => {
     if (!streamSid) return
     // Wait until we have a small prebuffer to avoid initial choppiness
@@ -117,11 +119,12 @@ wss.on('connection', (ws) => {
   function enqueueMu(mu) { outboundQueue.push(mu) }
 
   function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt) {
-    if (!OAI_KEY) return
-    try {
+  if (!OAI_KEY) return
+  try {
       const model = process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-realtime-preview-2024-12-17'
       const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
       const rws = new WebSocket(url, { headers: { Authorization: `Bearer ${OAI_KEY}`, 'OpenAI-Beta': 'realtime=v1' }, perMessageDeflate: false })
+      let initialTurnSent = false
       rws.on('open', () => {
         oai.ws = rws
         oai.ready = true
@@ -135,13 +138,19 @@ wss.on('connection', (ws) => {
           sessionInstructions = 'Your first response must be to say exactly: "' + safeGreeting + '". After that, you must follow all other instructions.\n\n' + sessionInstructions
         }
 
+        // Normalize voice labels to OpenAI identifiers when possible
+        const v = normalizeVoiceId(voice)
         rws.send(JSON.stringify({
           type: 'session.update',
           session: {
-            voice: voice || 'sage',
+            voice: v || 'sage',
             modalities: ['audio', 'text'],
-            output_audio_format: 'g711_ulaw',
+            // Faster TTS path: stream PCM16 from OpenAI and convert locally to μ-law 8k for Twilio
+            output_audio_format: 'pcm16',
+            output_audio_sampling_rate: 16000,
             input_audio_format: 'g711_ulaw',
+            // Enable automatic speech turns so we don't need manual commits
+            turn_detection: { type: 'server_vad' },
             instructions: sessionInstructions
           }
         }))
@@ -161,13 +170,64 @@ wss.on('connection', (ws) => {
               console.log('[oai.event]', msg.type)
             }
           }
-          // Handle both legacy and current audio delta events; with g711_ulaw we can forward directly
+          // Function/tool calling lifecycle
+          if (msg?.type === 'response.function_call.created') {
+            const callId = msg.call_id || msg.id
+            const name = msg.name || 'unknown'
+            if (callId) toolBuffers.set(callId, { name, args: '' })
+          }
+          if (msg?.type === 'response.function_call.arguments.delta' || msg?.type === 'response.function_call_arguments.delta') {
+            const callId = msg.call_id || msg.id
+            const delta = msg.delta || ''
+            if (callId && toolBuffers.has(callId)) {
+              toolBuffers.get(callId).args += delta
+            }
+          }
+          const isArgsDone = (msg?.type === 'response.function_call.arguments.done' || msg?.type === 'response.function_call_arguments.done')
+          if (isArgsDone || msg?.type === 'response.function_call.completed') {
+            const callId = msg.call_id || msg.id
+            if (callId && toolBuffers.has(callId)) {
+              const buf = toolBuffers.get(callId)
+              const name = msg.name || buf.name || 'unknown'
+              const argsJson = msg.arguments || buf.args || ''
+              // Invoke our HTTP tool and provide results back to the model
+              invokeToolAndRespond(rws, callId, name, argsJson, { orgId, agentId })
+                .catch((e) => console.warn('[tool.invoke.error]', e?.message))
+            }
+          }
+          // After session settings apply, explicitly speak the greeting once
+          if (msg?.type === 'session.updated' && !initialTurnSent) {
+            initialTurnSent = true
+            if (greetingText) {
+              const safe = String(greetingText).replace(/\"/g, '"').replace(/"/g, '\\"')
+              const instr = `Say exactly: "${safe}". Then stop speaking and wait for the caller.`
+              try {
+                rws.send(JSON.stringify({ type: 'response.create', response: { instructions: instr, modalities: ['audio','text'] } }))
+                console.log('[oai.response.create] sent greeting turn')
+              } catch (e) {
+                console.warn('[oai.response.create.error]', e?.message)
+              }
+            } else {
+              // No explicit greeting; at least start the first turn
+              try {
+                rws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }))
+                console.log('[oai.response.create] sent initial turn (no greeting)')
+              } catch (e) {
+                console.warn('[oai.response.create.error]', e?.message)
+              }
+            }
+          }
+          // Handle audio deltas: decode PCM16 16k, downsample to 8k, encode μ-law, send in 20ms frames
           if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
-            const mu = Buffer.from(b64, 'base64')
-            for (let i = 0; i < mu.length; i += 160) {
-              enqueueMu(mu.subarray(i, i + 160))
+            const pcm16 = b64ToPcm16(b64)
+            const pcm8k = downsample16kTo8k(pcm16)
+            const frame = 160 // 20ms @8kHz
+            for (let i = 0; i < pcm8k.length; i += frame) {
+              const slice = pcm8k.subarray(i, i + frame)
+              const mu = encodePcm16ToMuLaw(slice)
+              enqueueMu(mu)
             }
           }
           // Mark greeting as complete on first completed response
@@ -206,21 +266,54 @@ wss.on('connection', (ws) => {
         selectedVoice = params['voice'] || 'sage'
         console.log('[twilio.stream.start]', { callSid, streamSid, orgId, agentId, voice: selectedVoice })
 
-        // Fetch agent greeting, language, and prompt
+        // Fetch agent greeting, language, prompt, and voice
         let greeting = 'Hello! How can I help you today?'
         let agentLanguage = 'en-US'
         let agentPrompt = 'You are a helpful voice assistant.'
-        if (orgId && agentId) {
-          const { data: agent } = await supabase
-            .from('agent_configurations')
-            .select('greeting, language, prompt')
-            .eq('organization_id', orgId)
-            .eq('id', agentId)
-            .single()
-          if (agent && agent.greeting) greeting = agent.greeting
-          if (agent && agent.language) agentLanguage = agent.language
-          if (agent && agent.prompt) agentPrompt = agent.prompt
+        let agentName = ''
+        let agentVoice = ''
+        if (orgId) {
+          let agent
+          if (agentId && agentId !== 'default') {
+            const { data } = await supabase
+              .from('agent_configurations')
+              .select('id, display_name, greeting, language, prompt, voice')
+              .eq('organization_id', orgId)
+              .eq('id', agentId)
+              .single()
+            agent = data
+          } else {
+            const { data } = await supabase
+              .from('agent_configurations')
+              .select('id, display_name, greeting, language, prompt, voice')
+              .eq('organization_id', orgId)
+              .eq('name', 'default')
+              .single()
+            agent = data
+            if (agent && agent.id) agentId = agent.id // resolve real agent id for this call
+          }
+          if (agent) {
+            if (agent.greeting) greeting = agent.greeting
+            if (agent.language) agentLanguage = agent.language
+            if (agent.prompt) agentPrompt = agent.prompt
+            if (agent.display_name) agentName = agent.display_name
+            if (agent.voice) agentVoice = agent.voice
+          }
         }
+        // Prefer DB-configured voice
+        if (agentVoice) selectedVoice = agentVoice
+
+        // Log loaded agent configuration for traceability
+        const preview = (s) => (s ? String(s).slice(0, 120) : '')
+        console.log('[agent.loaded]', {
+          organizationId: orgId,
+          agentId,
+          name: agentName || undefined,
+          language: agentLanguage,
+          voice: selectedVoice,
+          greeting: preview(greeting),
+          prompt: preview(agentPrompt)
+        })
 
         // Connect OpenAI Realtime and have it speak the greeting first
         connectOpenAIRealtime(selectedVoice, greeting, agentLanguage, agentPrompt)
@@ -255,3 +348,103 @@ server.listen(PORT, () => {
   console.log(`[twilio-ws] listening on ws://localhost:${PORT}`)
   console.log('[twilio-ws] expose this port with ngrok: ngrok http', PORT)
 })
+
+// --- Tool invocation helpers ---
+function normalizeVoiceId(voice) {
+  if (!voice) return ''
+  const v = String(voice).toLowerCase()
+  // Common labels mapped to OpenAI voice IDs
+  if (v.includes('shimmer')) return 'shimmer'
+  if (v.includes('sage')) return 'sage'
+  if (v.includes('alloy')) return 'alloy'
+  if (v.includes('verse')) return 'verse'
+  if (v.includes('aria')) return 'aria'
+  if (v.includes('opal')) return 'opal'
+  return voice
+}
+
+// --- Audio utils: base64 -> PCM16, downsample to 8k, μ-law encode ---
+function b64ToPcm16(b64) {
+  const buf = Buffer.from(b64, 'base64')
+  return new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2))
+}
+
+function downsample16kTo8k(pcm16k) {
+  const out = new Int16Array(Math.floor(pcm16k.length / 2))
+  for (let i = 0, j = 0; j < out.length; i += 2, j++) out[j] = pcm16k[i]
+  return out
+}
+
+const MU_BIAS = 0x84
+const MU_CLIP = 32635
+function pcm16ToMu(sample) {
+  let s = sample
+  let sign = (s >> 8) & 0x80
+  if (sign !== 0) s = -s
+  if (s > MU_CLIP) s = MU_CLIP
+  s = s + MU_BIAS
+  let exponent = 7
+  for (let expMask = 0x4000; (s & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) {}
+  let mantissa = (s >> ((exponent === 0) ? 4 : (exponent + 3))) & 0x0f
+  let mu = ~(sign | (exponent << 4) | mantissa)
+  return mu & 0xff
+}
+function encodePcm16ToMuLaw(pcm) {
+  const out = new Uint8Array(pcm.length)
+  for (let i = 0; i < pcm.length; i++) out[i] = pcm16ToMu(pcm[i])
+  return out
+}
+
+async function invokeToolAndRespond(rws, callId, name, argsJson, ctx) {
+  let args = {}
+  try { args = argsJson ? JSON.parse(argsJson) : {} } catch {}
+
+  // Infer function if omitted
+  let effective = name || 'unknown'
+  if (!effective || effective === 'unknown') {
+    if (args && typeof args === 'object') {
+      if (args.start && args.end && !args.customer) effective = 'checkAvailability'
+      else if (args.start && args.end && args.customer) effective = 'bookAppointment'
+      else if (args.date) effective = 'getAvailableSlots'
+    }
+  }
+
+  const body = { ...args }
+  // Ensure agent and organization are present in tool requests
+  if (ctx && ctx.agentId && !body.agentId) body.agentId = ctx.agentId
+  if (ctx && ctx.orgId && !body.organizationId) body.organizationId = ctx.orgId
+  const base = (process.env.NEXT_PUBLIC_APP_URL || '').replace(/\/$/, '')
+  let url = ''
+  try {
+    const aId = (ctx && ctx.agentId) || args.agentId || args.agent_id
+    if (effective === 'checkAvailability') {
+      url = aId ? `${base}/api/agents/${aId}/calendar/check-availability` : `${base}/api/calendar/check-availability`
+    } else if (effective === 'getAvailableSlots') {
+      url = aId ? `${base}/api/agents/${aId}/calendar/slots` : `${base}/api/calendar/slots`
+    } else if (effective === 'bookAppointment') {
+      url = aId ? `${base}/api/agents/${aId}/appointments/book` : `${base}/api/appointments/book`
+    } else {
+      // Unknown tool; still send a structured error back
+      await sendToolResult(rws, callId, { error: `Unknown tool: ${name}` })
+      return
+    }
+
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    let payload = null
+    try { payload = await res.json() } catch { payload = { ok: res.ok } }
+    if (!res.ok) payload = { error: 'http_error', status: res.status, detail: payload }
+    await sendToolResult(rws, callId, payload)
+    // Let the model speak based on tool output (no suppression)
+    rws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }))
+  } catch (e) {
+    await sendToolResult(rws, callId, { error: (e && e.message) || 'tool_invoke_failed' })
+  }
+}
+
+async function sendToolResult(rws, callId, result) {
+  const item = {
+    type: 'conversation.item.create',
+    item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) }
+  }
+  try { rws.send(JSON.stringify(item)) } catch (e) { /* ignore */ }
+}
