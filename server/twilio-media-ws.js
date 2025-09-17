@@ -96,7 +96,7 @@ wss.on('connection', (ws) => {
   let txFrames = 0
   let lastTxLog = Date.now()
   let startedPacing = false
-  const PREBUFFER_FRAMES = 1 // ~20ms prebuffer for lowest initial latency
+  const PREBUFFER_FRAMES = 2 // ~40ms prebuffer for smoother starts
   const sendTicker = setInterval(() => {
     if (!streamSid) return
     // Wait until we have a small prebuffer to avoid initial choppiness
@@ -128,10 +128,10 @@ wss.on('connection', (ws) => {
       rws.on('open', () => {
         oai.ws = rws
         oai.ready = true
-        // Ensure the session is configured to output μ-law 8k audio and desired language
+        // Persona and conversation guidance
         const lang = languageCode || 'en-US'
         const basePrompt = agentPrompt || 'You are a helpful voice assistant.'
-        let sessionInstructions = `${basePrompt}\n\nAlways and only speak in ${lang}. Do not switch languages even if the caller speaks another language; instead, politely ask to continue in ${lang}. Keep responses concise and conversational. When the caller pauses, wait rather than interrupting.`
+        let sessionInstructions = `${basePrompt}\n\nLanguage: Detect and mirror the caller's language automatically. If the caller switches languages, adapt immediately.\nConversation: Keep responses concise and conversational. Avoid interrupting; wait briefly after the caller finishes before speaking. If you're uncertain what the caller said, ask for clarification. Confirm critical details like dates, times, names, and numbers.\nSpeaking style: Speak at a natural but brisk pace and avoid long pauses between sentences.`
         
         if (greetingText) {
           const safeGreeting = String(greetingText).replace(/"/g, '\"')
@@ -145,11 +145,10 @@ wss.on('connection', (ws) => {
           session: {
             voice: v || 'sage',
             modalities: ['audio', 'text'],
-            // Faster TTS path: stream PCM16 from OpenAI and convert locally to μ-law 8k for Twilio
-            output_audio_format: 'pcm16',
-            output_audio_sampling_rate: 16000,
+            // Output μ-law 8k directly from Realtime for reliable pacing
+            output_audio_format: 'g711_ulaw',
             input_audio_format: 'g711_ulaw',
-            // Enable automatic speech turns so we don't need manual commits
+            // Enable automatic speech turns (use default server VAD timing)
             turn_detection: { type: 'server_vad' },
             instructions: sessionInstructions
           }
@@ -217,17 +216,13 @@ wss.on('connection', (ws) => {
               }
             }
           }
-          // Handle audio deltas: decode PCM16 16k, downsample to 8k, encode μ-law, send in 20ms frames
+          // Handle audio deltas: forward μ-law frames directly (20ms @ 8kHz)
           if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
-            const pcm16 = b64ToPcm16(b64)
-            const pcm8k = downsample16kTo8k(pcm16)
-            const frame = 160 // 20ms @8kHz
-            for (let i = 0; i < pcm8k.length; i += frame) {
-              const slice = pcm8k.subarray(i, i + frame)
-              const mu = encodePcm16ToMuLaw(slice)
-              enqueueMu(mu)
+            const mu = Buffer.from(b64, 'base64')
+            for (let i = 0; i < mu.length; i += 160) {
+              enqueueMu(mu.subarray(i, i + 160))
             }
           }
           // Mark greeting as complete on first completed response
