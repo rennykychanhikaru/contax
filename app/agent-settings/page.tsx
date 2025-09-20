@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import Header from '../../components/Header';
 import AgentSettingsForm from './AgentSettingsForm';
 import AgentResponseTypeForm from './AgentResponseTypeForm';
+import AgentTwilioSettingsForm from './AgentTwilioSettingsForm';
 
 export default async function AgentSettingsPage() {
   const cookieStore = await cookies();
@@ -46,6 +47,14 @@ export default async function AgentSettingsPage() {
           </div>
 
           <div className="space-y-6">
+            <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
+              <h3 className="text-lg font-semibold mb-4 text-white">Agent Twilio Integration</h3>
+              <p className="text-sm text-gray-400 mb-4">
+                Connect Twilio specifically for this agent. These settings override any organization-level Twilio configuration.
+              </p>
+              <AgentTwilioSettingsForm />
+            </section>
+
             <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
               <h3 className="text-lg font-semibold mb-4 text-white">Agent Configuration</h3>
               <p className="text-sm text-gray-400 mb-4">

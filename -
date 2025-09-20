@@ -1,0 +1,3205 @@
+
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_net" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pgsodium";
+
+
+
+
+
+
+COMMENT ON SCHEMA "public" IS 'standard public schema';
+
+
+
+CREATE EXTENSION IF NOT EXISTS "btree_gist" WITH SCHEMA "public";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_graphql" WITH SCHEMA "graphql";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pg_stat_statements" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "pgjwt" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "supabase_vault" WITH SCHEMA "vault";
+
+
+
+
+
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA "extensions";
+
+
+
+
+
+
+CREATE OR REPLACE FUNCTION "public"."check_webhook_rate_limit"("p_organization_id" "uuid", "p_minute_limit" integer, "p_hour_limit" integer) RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  v_current_minute timestamptz;
+  v_current_hour timestamptz;
+  v_minute_count integer;
+  v_hour_count integer;
+BEGIN
+  -- Round to current minute and hour
+  v_current_minute := date_trunc('minute', now());
+  v_current_hour := date_trunc('hour', now());
+  
+  -- Get or create rate limit record
+  INSERT INTO webhook_rate_limits (
+    organization_id,
+    minute_bucket,
+    minute_count,
+    hour_bucket,
+    hour_count,
+    updated_at
+  ) VALUES (
+    p_organization_id,
+    v_current_minute,
+    0,
+    v_current_hour,
+    0,
+    now()
+  ) ON CONFLICT (organization_id) DO UPDATE SET
+    minute_bucket = CASE 
+      WHEN webhook_rate_limits.minute_bucket = v_current_minute 
+      THEN webhook_rate_limits.minute_bucket 
+      ELSE v_current_minute 
+    END,
+    minute_count = CASE 
+      WHEN webhook_rate_limits.minute_bucket = v_current_minute 
+      THEN webhook_rate_limits.minute_count 
+      ELSE 0 
+    END,
+    hour_bucket = CASE 
+      WHEN webhook_rate_limits.hour_bucket = v_current_hour 
+      THEN webhook_rate_limits.hour_bucket 
+      ELSE v_current_hour 
+    END,
+    hour_count = CASE 
+      WHEN webhook_rate_limits.hour_bucket = v_current_hour 
+      THEN webhook_rate_limits.hour_count 
+      ELSE 0 
+    END,
+    updated_at = now()
+  RETURNING minute_count, hour_count INTO v_minute_count, v_hour_count;
+  
+  -- Check if within limits
+  IF v_minute_count >= p_minute_limit OR v_hour_count >= p_hour_limit THEN
+    RETURN false;
+  END IF;
+  
+  -- Increment counters
+  UPDATE webhook_rate_limits SET
+    minute_count = minute_count + 1,
+    hour_count = hour_count + 1,
+    updated_at = now()
+  WHERE organization_id = p_organization_id;
+  
+  RETURN true;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."check_webhook_rate_limit"("p_organization_id" "uuid", "p_minute_limit" integer, "p_hour_limit" integer) OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_default_agent_for_organization"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  -- Create demo agent for new organization
+  INSERT INTO public.agent_configurations (
+    organization_id,
+    name,
+    display_name,
+    description,
+    prompt,
+    greeting,
+    language,
+    temperature,
+    max_tokens,
+    voice,
+    is_default,
+    is_demo,
+    agent_type
+  ) VALUES (
+    NEW.id,
+    'default',
+    'Contax Demo Agent',
+    'This is your demo agent to show you what a phone call would look like on Contax',
+    'You are the Contax Demo Agent for ' || NEW.name || '. This is a demonstration of Contax''s voice AI capabilities.
+
+You are demonstrating what a professional voice agent can do for scheduling and customer interactions. 
+
+Key capabilities to showcase:
+- Natural conversation flow
+- Calendar availability checking
+- Meeting scheduling
+- Professional tone and manner
+- Multi-language support
+
+When someone calls, introduce yourself as the demo agent for their organization and explain that this is a demonstration of Contax capabilities. Be friendly, professional, and showcase the best of what Contax can offer.
+
+Remember to:
+- Mention this is a demo to set expectations
+- Highlight the seamless scheduling capabilities
+- Be enthusiastic about showing what''s possible with Contax
+- Offer to schedule a demo meeting as an example',
+    'Hi! Welcome to Contax. I''m your demo AI assistant for ' || NEW.name || ', showing you what''s possible with voice-powered scheduling. This is a demonstration call. How can I help you explore our capabilities today?',
+    'en-US',
+    0.7,
+    500,
+    'alloy',
+    true,
+    true,
+    'demo'
+  );
+  
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."create_default_agent_for_organization"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_organization_for_user"("user_id" "uuid", "org_name" "text") RETURNS "uuid"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  new_org_id UUID;
+BEGIN
+  -- Create organization
+  INSERT INTO public.organizations (
+    id,
+    name,
+    timezone,
+    business_hours,
+    settings
+  ) VALUES (
+    uuid_generate_v4(),
+    org_name,
+    'America/New_York',
+    jsonb_build_object(
+      'monday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', true),
+      'tuesday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', true),
+      'wednesday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', true),
+      'thursday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', true),
+      'friday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', true),
+      'saturday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', false),
+      'sunday', jsonb_build_object('start', '09:00', 'end', '17:00', 'enabled', false)
+    ),
+    jsonb_build_object(
+      'allowBooking', true,
+      'bufferTime', 15,
+      'maxAdvanceBooking', 30
+    )
+  ) RETURNING id INTO new_org_id;
+  
+  -- Add user as owner
+  INSERT INTO public.organization_members (
+    organization_id,
+    user_id,
+    role
+  ) VALUES (
+    new_org_id,
+    user_id,
+    'owner'
+  );
+  
+  -- Mark user as onboarded
+  UPDATE public.users 
+  SET onboarded = true 
+  WHERE id = user_id;
+  
+  RETURN new_org_id;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."create_organization_for_user"("user_id" "uuid", "org_name" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."create_user_profile"() RETURNS "trigger"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  -- Just create a basic user profile, no organization
+  INSERT INTO public.users (
+    id,
+    display_name,
+    onboarded,
+    photo_url,
+    created_at
+  ) VALUES (
+    NEW.id,
+    COALESCE(
+      NEW.raw_user_meta_data->>'full_name',
+      NEW.raw_user_meta_data->>'name',
+      split_part(NEW.email, '@', 1)
+    ),
+    false,
+    NEW.raw_user_meta_data->>'avatar_url',
+    NOW()
+  ) ON CONFLICT (id) DO NOTHING;
+  
+  RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."create_user_profile"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."decrypt_google_token"("encrypted_token" "text", "agent_id" "uuid") RETURNS "text"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  encryption_key TEXT;
+BEGIN
+  IF encrypted_token IS NULL THEN
+    RETURN NULL;
+  END IF;
+  
+  -- Use the same key generation as encryption
+  encryption_key := encode(digest(agent_id::TEXT || 'contax-calendar-encryption-salt-2024', 'sha256'), 'hex');
+  
+  -- Decrypt the token
+  RETURN pgp_sym_decrypt(decode(encrypted_token, 'base64')::bytea, encryption_key);
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Log error and return NULL instead of failing
+    RAISE WARNING 'Failed to decrypt token: %', SQLERRM;
+    RETURN NULL;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."decrypt_google_token"("encrypted_token" "text", "agent_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."disconnect_agent_google_calendar"("p_agent_id" "uuid") RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  -- Clear all calendar-related fields
+  UPDATE public.agent_configurations
+  SET 
+    google_calendar_access_token_encrypted = NULL,
+    google_calendar_refresh_token_encrypted = NULL,
+    google_calendar_token_expiry = NULL,
+    google_calendar_email = NULL,
+    google_calendar_id = NULL,
+    google_calendar_connected = false,
+    google_calendar_connected_at = NULL,
+    google_calendar_last_sync = NULL,
+    updated_at = NOW()
+  WHERE id = p_agent_id;
+  
+  -- Also delete any associated calendars
+  DELETE FROM public.agent_calendars WHERE agent_id = p_agent_id;
+  
+  RETURN FOUND;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."disconnect_agent_google_calendar"("p_agent_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."encrypt_google_token"("token" "text", "agent_id" "uuid") RETURNS "text"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  encryption_key TEXT;
+BEGIN
+  IF token IS NULL THEN
+    RETURN NULL;
+  END IF;
+  
+  -- Use agent_id combined with a fixed salt for encryption
+  -- In production, you should use a proper secret management system
+  encryption_key := encode(digest(agent_id::TEXT || 'contax-calendar-encryption-salt-2024', 'sha256'), 'hex');
+  
+  -- Encrypt the token using pgp_sym_encrypt
+  RETURN encode(pgp_sym_encrypt(token, encryption_key)::bytea, 'base64');
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Log error and return NULL instead of failing
+    RAISE WARNING 'Failed to encrypt token: %', SQLERRM;
+    RETURN NULL;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."encrypt_google_token"("token" "text", "agent_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."generate_webhook_secret"() RETURNS "text"
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  -- Generate a strong secret (48 bytes = 384 bits of entropy)
+  RETURN encode(gen_random_bytes(48), 'hex');
+END;
+$$;
+
+
+ALTER FUNCTION "public"."generate_webhook_secret"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."generate_webhook_token"() RETURNS "text"
+    LANGUAGE "plpgsql"
+    AS $$
+DECLARE
+  token TEXT;
+  done BOOLEAN DEFAULT false;
+BEGIN
+  WHILE NOT done LOOP
+    -- Generate a random token (alphanumeric, 32 chars)
+    token := encode(gen_random_bytes(16), 'hex');
+    
+    -- Check if token already exists
+    IF NOT EXISTS (
+      SELECT 1 FROM public.agent_configurations 
+      WHERE webhook_token = token
+    ) THEN
+      done := true;
+    END IF;
+  END LOOP;
+  
+  RETURN token;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."generate_webhook_token"() OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_agent_google_tokens"("p_agent_id" "uuid") RETURNS TABLE("access_token" "text", "refresh_token" "text", "token_expiry" bigint, "is_expired" boolean, "calendar_email" "text", "calendar_id" "text", "connected" boolean)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  v_agent RECORD;
+  v_current_time BIGINT;
+BEGIN
+  -- Get current Unix timestamp
+  v_current_time := EXTRACT(EPOCH FROM NOW());
+  
+  -- Fetch agent configuration
+  SELECT * INTO v_agent
+  FROM public.agent_configurations
+  WHERE id = p_agent_id;
+  
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+  
+  -- Return decrypted tokens and metadata
+  RETURN QUERY
+  SELECT 
+    decrypt_google_token(v_agent.google_calendar_access_token_encrypted, p_agent_id),
+    decrypt_google_token(v_agent.google_calendar_refresh_token_encrypted, p_agent_id),
+    v_agent.google_calendar_token_expiry,
+    CASE 
+      WHEN v_agent.google_calendar_token_expiry IS NULL THEN true
+      WHEN v_agent.google_calendar_token_expiry <= v_current_time THEN true
+      ELSE false
+    END,
+    v_agent.google_calendar_email,
+    v_agent.google_calendar_id,
+    v_agent.google_calendar_connected;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."get_agent_google_tokens"("p_agent_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_user_default_organization"("user_id" "uuid") RETURNS TABLE("id" "uuid", "name" "text")
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    o.id,
+    o.name
+  FROM public.organizations o
+  INNER JOIN public.organization_members om ON o.id = om.organization_id
+  WHERE om.user_id = get_user_default_organization.user_id
+  ORDER BY om.created_at ASC
+  LIMIT 1;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."get_user_default_organization"("user_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."get_user_organizations"("user_id" "uuid") RETURNS TABLE("id" "uuid", "name" "text", "role" "text", "created_at" timestamp with time zone)
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  RETURN QUERY
+  SELECT 
+    o.id,
+    o.name,
+    om.role,
+    om.created_at
+  FROM public.organizations o
+  INNER JOIN public.organization_members om ON o.id = om.organization_id
+  WHERE om.user_id = get_user_organizations.user_id
+  ORDER BY om.created_at DESC;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."get_user_organizations"("user_id" "uuid") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."has_permission"("p_user_id" "uuid", "p_org_id" "uuid", "p_permission" "text") RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+BEGIN
+  -- For now, just check if user is a member of the organization
+  -- In the future, this can be expanded to check specific permissions
+  RETURN EXISTS (
+    SELECT 1 FROM public.organization_members
+    WHERE user_id = p_user_id
+    AND organization_id = p_org_id
+  );
+END;
+$$;
+
+
+ALTER FUNCTION "public"."has_permission"("p_user_id" "uuid", "p_org_id" "uuid", "p_permission" "text") OWNER TO "postgres";
+
+
+CREATE OR REPLACE FUNCTION "public"."store_agent_google_tokens"("p_agent_id" "uuid", "p_access_token" "text", "p_refresh_token" "text", "p_expires_in" integer, "p_email" "text" DEFAULT NULL::"text", "p_calendar_id" "text" DEFAULT NULL::"text") RETURNS boolean
+    LANGUAGE "plpgsql" SECURITY DEFINER
+    AS $$
+DECLARE
+  v_expiry BIGINT;
+  v_encrypted_access TEXT;
+  v_encrypted_refresh TEXT;
+BEGIN
+  -- Calculate expiry timestamp (Unix seconds)
+  v_expiry := EXTRACT(EPOCH FROM NOW()) + COALESCE(p_expires_in, 3600);
+  
+  -- Encrypt tokens
+  v_encrypted_access := encrypt_google_token(p_access_token, p_agent_id);
+  v_encrypted_refresh := encrypt_google_token(p_refresh_token, p_agent_id);
+  
+  -- Log for debugging
+  RAISE NOTICE 'Storing tokens for agent %: access_encrypted=%, refresh_encrypted=%', 
+    p_agent_id, 
+    v_encrypted_access IS NOT NULL,
+    v_encrypted_refresh IS NOT NULL;
+  
+  -- Update agent configuration with encrypted tokens
+  UPDATE public.agent_configurations
+  SET 
+    google_calendar_access_token_encrypted = v_encrypted_access,
+    google_calendar_refresh_token_encrypted = v_encrypted_refresh,
+    google_calendar_token_expiry = v_expiry,
+    google_calendar_email = p_email,
+    google_calendar_id = COALESCE(p_calendar_id, p_email),
+    google_calendar_connected = true,
+    google_calendar_connected_at = NOW(),
+    updated_at = NOW()
+  WHERE id = p_agent_id;
+  
+  RETURN FOUND;
+END;
+$$;
+
+
+ALTER FUNCTION "public"."store_agent_google_tokens"("p_agent_id" "uuid", "p_access_token" "text", "p_refresh_token" "text", "p_expires_in" integer, "p_email" "text", "p_calendar_id" "text") OWNER TO "postgres";
+
+SET default_tablespace = '';
+
+SET default_table_access_method = "heap";
+
+
+CREATE TABLE IF NOT EXISTS "public"."agent_calendars" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "agent_id" "uuid" NOT NULL,
+    "calendar_id" "text" NOT NULL,
+    "calendar_name" "text",
+    "calendar_email" "text",
+    "is_primary" boolean DEFAULT false,
+    "access_role" "text",
+    "background_color" "text",
+    "foreground_color" "text",
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."agent_calendars" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."agent_configurations" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "name" "text" DEFAULT 'default'::"text" NOT NULL,
+    "display_name" "text",
+    "description" "text",
+    "prompt" "text" NOT NULL,
+    "greeting" "text" NOT NULL,
+    "language" "text" DEFAULT 'en-US'::"text",
+    "temperature" numeric(3,2) DEFAULT 0.7,
+    "max_tokens" integer DEFAULT 500,
+    "voice" "text" DEFAULT 'alloy'::"text",
+    "is_default" boolean DEFAULT false,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    "webhook_enabled" boolean DEFAULT false,
+    "webhook_token" "text",
+    "webhook_url" "text",
+    "is_demo" boolean DEFAULT false,
+    "agent_type" "text" DEFAULT 'custom'::"text",
+    "google_calendar_access_token_encrypted" "text",
+    "google_calendar_refresh_token_encrypted" "text",
+    "google_calendar_token_expiry" bigint,
+    "google_calendar_email" "text",
+    "google_calendar_id" "text",
+    "google_calendar_connected" boolean DEFAULT false,
+    "google_calendar_connected_at" timestamp with time zone,
+    "google_calendar_last_sync" timestamp with time zone,
+    CONSTRAINT "agent_configurations_agent_type_check" CHECK (("agent_type" = ANY (ARRAY['demo'::"text", 'custom'::"text", 'template'::"text"]))),
+    CONSTRAINT "agent_configurations_temperature_check" CHECK ((("temperature" >= (0)::numeric) AND ("temperature" <= (2)::numeric)))
+);
+
+
+ALTER TABLE "public"."agent_configurations" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."agent_configurations" IS 'Stores AI agent configurations for each organization. Demo agents are automatically created for new organizations.';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."is_demo" IS 'Whether this is a demo agent (true) or production agent (false)';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."agent_type" IS 'Type of agent: demo, custom, or template';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_access_token_encrypted" IS 'Encrypted Google Calendar access token for this agent';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_refresh_token_encrypted" IS 'Encrypted Google Calendar refresh token for this agent';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_token_expiry" IS 'Unix timestamp (seconds) when the access token expires';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_email" IS 'Email address of the connected Google account';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_id" IS 'Primary Google Calendar ID for this agent';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_connected" IS 'Whether this agent has an active Google Calendar connection';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_connected_at" IS 'When the Google Calendar was connected';
+
+
+
+COMMENT ON COLUMN "public"."agent_configurations"."google_calendar_last_sync" IS 'Last time calendar data was synchronized';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."agent_twilio_settings" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "agent_id" "uuid" NOT NULL,
+    "account_sid" "text" NOT NULL,
+    "auth_token_encrypted" "text" NOT NULL,
+    "phone_number" "text" NOT NULL,
+    "encryption_version" "text" DEFAULT 'v1'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."agent_twilio_settings" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."appointments" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid",
+    "call_id" "uuid",
+    "customer_name" "text",
+    "customer_phone" "text",
+    "customer_email" "text",
+    "scheduled_start" timestamp with time zone NOT NULL,
+    "scheduled_end" timestamp with time zone NOT NULL,
+    "status" "text" DEFAULT 'confirmed'::"text",
+    "google_event_id" "text",
+    "notes" "text",
+    "created_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."appointments" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."audit_logs" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid",
+    "user_id" "uuid",
+    "action" "text" NOT NULL,
+    "resource_type" "text",
+    "resource_id" "uuid",
+    "changes" "jsonb",
+    "created_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."audit_logs" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."call_logs" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "agent_id" "uuid",
+    "call_sid" "text",
+    "to_number" "text" NOT NULL,
+    "from_number" "text" NOT NULL,
+    "status" "text" NOT NULL,
+    "direction" "text" NOT NULL,
+    "duration" integer,
+    "webhook_triggered" boolean DEFAULT false,
+    "metadata" "jsonb",
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    CONSTRAINT "call_logs_direction_check" CHECK (("direction" = ANY (ARRAY['inbound'::"text", 'outbound'::"text"])))
+);
+
+
+ALTER TABLE "public"."call_logs" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."calls" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid",
+    "call_sid" "text",
+    "caller_phone" "text" NOT NULL,
+    "started_at" timestamp with time zone DEFAULT "now"(),
+    "ended_at" timestamp with time zone,
+    "duration_seconds" integer,
+    "status" "text" DEFAULT 'in_progress'::"text",
+    "recording_url" "text",
+    "transcript" "jsonb",
+    "ai_summary" "text",
+    "appointment_booked" boolean DEFAULT false,
+    "created_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."calls" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."organizations" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "name" "text" NOT NULL,
+    "phone_number" "text",
+    "timezone" "text" DEFAULT 'America/New_York'::"text",
+    "business_hours" "jsonb" DEFAULT '{}'::"jsonb",
+    "settings" "jsonb" DEFAULT '{}'::"jsonb",
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"(),
+    "webhook_token" "text",
+    "webhook_secret_encrypted" "text",
+    "webhook_enabled" boolean DEFAULT false,
+    "webhook_rate_limit_per_minute" integer DEFAULT 10,
+    "webhook_rate_limit_per_hour" integer DEFAULT 100,
+    "webhook_failures" integer DEFAULT 0,
+    "webhook_last_failure_at" timestamp with time zone,
+    "webhook_auto_disabled_at" timestamp with time zone,
+    "webhook_created_at" timestamp with time zone,
+    "webhook_rotated_at" timestamp with time zone
+);
+
+
+ALTER TABLE "public"."organizations" OWNER TO "postgres";
+
+
+COMMENT ON COLUMN "public"."organizations"."webhook_token" IS 'Unique URL-safe token for webhook endpoint identification';
+
+
+
+COMMENT ON COLUMN "public"."organizations"."webhook_secret_encrypted" IS 'Encrypted webhook secret for request validation';
+
+
+
+COMMENT ON COLUMN "public"."organizations"."webhook_enabled" IS 'Whether webhook is enabled for this organization';
+
+
+
+COMMENT ON COLUMN "public"."organizations"."webhook_failures" IS 'Count of consecutive webhook validation failures';
+
+
+
+COMMENT ON COLUMN "public"."organizations"."webhook_auto_disabled_at" IS 'Timestamp when webhook was auto-disabled due to failures';
+
+
+
+CREATE OR REPLACE VIEW "public"."organization_demo_agents" AS
+ SELECT "ac"."id",
+    "ac"."organization_id",
+    "ac"."name",
+    "ac"."display_name",
+    "ac"."description",
+    "ac"."prompt",
+    "ac"."greeting",
+    "ac"."language",
+    "ac"."temperature",
+    "ac"."max_tokens",
+    "ac"."voice",
+    "ac"."is_default",
+    "ac"."created_at",
+    "ac"."updated_at",
+    "ac"."webhook_enabled",
+    "ac"."webhook_token",
+    "ac"."webhook_url",
+    "ac"."is_demo",
+    "ac"."agent_type",
+    "o"."name" AS "organization_name",
+    "o"."phone_number" AS "organization_phone",
+    "o"."timezone" AS "organization_timezone"
+   FROM ("public"."agent_configurations" "ac"
+     JOIN "public"."organizations" "o" ON (("o"."id" = "ac"."organization_id")))
+  WHERE (("ac"."is_demo" = true) AND ("ac"."is_default" = true));
+
+
+ALTER TABLE "public"."organization_demo_agents" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."organization_members" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "role" "text" DEFAULT 'owner'::"text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."organization_members" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."organization_settings" (
+    "organization_id" "uuid" NOT NULL,
+    "default_slot_minutes" integer DEFAULT 60 NOT NULL,
+    "buffer_minutes" integer DEFAULT 0 NOT NULL
+);
+
+
+ALTER TABLE "public"."organization_settings" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."tasks" (
+    "id" bigint NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "name" "text" NOT NULL,
+    "done" boolean NOT NULL,
+    "due_date" timestamp with time zone NOT NULL
+);
+
+
+ALTER TABLE "public"."tasks" OWNER TO "postgres";
+
+
+ALTER TABLE "public"."tasks" ALTER COLUMN "id" ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME "public"."tasks_id_seq"
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."twilio_settings" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid" NOT NULL,
+    "user_id" "uuid" NOT NULL,
+    "account_sid" "text" NOT NULL,
+    "auth_token" "text" NOT NULL,
+    "phone_number" "text" NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."twilio_settings" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."users" (
+    "id" "uuid" NOT NULL,
+    "photo_url" "text",
+    "display_name" "text",
+    "onboarded" boolean NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL
+);
+
+
+ALTER TABLE "public"."users" OWNER TO "postgres";
+
+
+CREATE TABLE IF NOT EXISTS "public"."webhook_logs" (
+    "id" "uuid" DEFAULT "extensions"."uuid_generate_v4"() NOT NULL,
+    "organization_id" "uuid",
+    "webhook_token" "text",
+    "ip_address" "inet",
+    "user_agent" "text",
+    "request_headers" "jsonb",
+    "request_body" "jsonb",
+    "response_status" integer,
+    "error_message" "text",
+    "processing_time_ms" integer,
+    "success" boolean DEFAULT false,
+    "created_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."webhook_logs" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."webhook_logs" IS 'Audit log of all webhook requests for security monitoring';
+
+
+
+CREATE TABLE IF NOT EXISTS "public"."webhook_rate_limits" (
+    "organization_id" "uuid" NOT NULL,
+    "minute_bucket" timestamp with time zone NOT NULL,
+    "minute_count" integer DEFAULT 0,
+    "hour_bucket" timestamp with time zone NOT NULL,
+    "hour_count" integer DEFAULT 0,
+    "last_reset_at" timestamp with time zone DEFAULT "now"(),
+    "updated_at" timestamp with time zone DEFAULT "now"()
+);
+
+
+ALTER TABLE "public"."webhook_rate_limits" OWNER TO "postgres";
+
+
+COMMENT ON TABLE "public"."webhook_rate_limits" IS 'Rate limiting tracking for webhook endpoints';
+
+
+
+ALTER TABLE ONLY "public"."agent_calendars"
+    ADD CONSTRAINT "agent_calendars_agent_id_calendar_id_key" UNIQUE ("agent_id", "calendar_id");
+
+
+
+ALTER TABLE ONLY "public"."agent_calendars"
+    ADD CONSTRAINT "agent_calendars_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."agent_configurations"
+    ADD CONSTRAINT "agent_configurations_organization_id_name_key" UNIQUE ("organization_id", "name");
+
+
+
+ALTER TABLE ONLY "public"."agent_configurations"
+    ADD CONSTRAINT "agent_configurations_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."agent_configurations"
+    ADD CONSTRAINT "agent_configurations_webhook_token_key" UNIQUE ("webhook_token");
+
+
+
+ALTER TABLE ONLY "public"."agent_twilio_settings"
+    ADD CONSTRAINT "agent_twilio_settings_agent_id_key" UNIQUE ("agent_id");
+
+
+
+ALTER TABLE ONLY "public"."agent_twilio_settings"
+    ADD CONSTRAINT "agent_twilio_settings_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."appointments"
+    ADD CONSTRAINT "appointments_organization_id_tstzrange_excl" EXCLUDE USING "gist" ("organization_id" WITH =, "tstzrange"("scheduled_start", "scheduled_end") WITH &&) WHERE (("status" <> 'cancelled'::"text"));
+
+
+
+ALTER TABLE ONLY "public"."appointments"
+    ADD CONSTRAINT "appointments_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."audit_logs"
+    ADD CONSTRAINT "audit_logs_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."call_logs"
+    ADD CONSTRAINT "call_logs_call_sid_key" UNIQUE ("call_sid");
+
+
+
+ALTER TABLE ONLY "public"."call_logs"
+    ADD CONSTRAINT "call_logs_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."calls"
+    ADD CONSTRAINT "calls_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."organization_members"
+    ADD CONSTRAINT "organization_members_organization_id_user_id_key" UNIQUE ("organization_id", "user_id");
+
+
+
+ALTER TABLE ONLY "public"."organization_members"
+    ADD CONSTRAINT "organization_members_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."organization_settings"
+    ADD CONSTRAINT "organization_settings_pkey" PRIMARY KEY ("organization_id");
+
+
+
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."organizations"
+    ADD CONSTRAINT "organizations_webhook_token_key" UNIQUE ("webhook_token");
+
+
+
+ALTER TABLE ONLY "public"."tasks"
+    ADD CONSTRAINT "tasks_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."twilio_settings"
+    ADD CONSTRAINT "twilio_settings_organization_id_key" UNIQUE ("organization_id");
+
+
+
+ALTER TABLE ONLY "public"."twilio_settings"
+    ADD CONSTRAINT "twilio_settings_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."users"
+    ADD CONSTRAINT "users_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."webhook_logs"
+    ADD CONSTRAINT "webhook_logs_pkey" PRIMARY KEY ("id");
+
+
+
+ALTER TABLE ONLY "public"."webhook_rate_limits"
+    ADD CONSTRAINT "webhook_rate_limits_pkey" PRIMARY KEY ("organization_id");
+
+
+
+CREATE INDEX "idx_agent_calendars_agent_id" ON "public"."agent_calendars" USING "btree" ("agent_id");
+
+
+
+CREATE INDEX "idx_agent_calendars_primary" ON "public"."agent_calendars" USING "btree" ("agent_id", "is_primary") WHERE ("is_primary" = true);
+
+
+
+CREATE INDEX "idx_agent_configurations_google_connected" ON "public"."agent_configurations" USING "btree" ("google_calendar_connected") WHERE ("google_calendar_connected" = true);
+
+
+
+CREATE INDEX "idx_agent_configurations_google_email" ON "public"."agent_configurations" USING "btree" ("google_calendar_email") WHERE ("google_calendar_email" IS NOT NULL);
+
+
+
+CREATE INDEX "idx_agent_configurations_org_id" ON "public"."agent_configurations" USING "btree" ("organization_id");
+
+
+
+CREATE INDEX "idx_agent_configurations_org_name" ON "public"."agent_configurations" USING "btree" ("organization_id", "name");
+
+
+
+CREATE INDEX "idx_agent_twilio_agent_id" ON "public"."agent_twilio_settings" USING "btree" ("agent_id");
+
+
+
+CREATE INDEX "idx_agent_twilio_org_id" ON "public"."agent_twilio_settings" USING "btree" ("organization_id");
+
+
+
+CREATE INDEX "idx_agent_twilio_phone" ON "public"."agent_twilio_settings" USING "btree" ("phone_number");
+
+
+
+CREATE INDEX "idx_call_logs_call_sid" ON "public"."call_logs" USING "btree" ("call_sid");
+
+
+
+CREATE INDEX "idx_call_logs_created_at" ON "public"."call_logs" USING "btree" ("created_at" DESC);
+
+
+
+CREATE INDEX "idx_call_logs_organization_id" ON "public"."call_logs" USING "btree" ("organization_id");
+
+
+
+CREATE INDEX "idx_organization_members_org_id" ON "public"."organization_members" USING "btree" ("organization_id");
+
+
+
+CREATE INDEX "idx_organization_members_role" ON "public"."organization_members" USING "btree" ("role");
+
+
+
+CREATE INDEX "idx_organization_members_user_id" ON "public"."organization_members" USING "btree" ("user_id");
+
+
+
+CREATE INDEX "idx_organizations_webhook_token" ON "public"."organizations" USING "btree" ("webhook_token") WHERE ("webhook_token" IS NOT NULL);
+
+
+
+CREATE INDEX "idx_webhook_logs_created_at" ON "public"."webhook_logs" USING "btree" ("created_at" DESC);
+
+
+
+CREATE INDEX "idx_webhook_logs_organization_id" ON "public"."webhook_logs" USING "btree" ("organization_id");
+
+
+
+CREATE INDEX "idx_webhook_logs_success" ON "public"."webhook_logs" USING "btree" ("success");
+
+
+
+CREATE OR REPLACE TRIGGER "on_organization_created_add_agent" AFTER INSERT ON "public"."organizations" FOR EACH ROW EXECUTE FUNCTION "public"."create_default_agent_for_organization"();
+
+
+
+ALTER TABLE ONLY "public"."agent_calendars"
+    ADD CONSTRAINT "agent_calendars_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agent_configurations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."agent_configurations"
+    ADD CONSTRAINT "agent_configurations_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."agent_twilio_settings"
+    ADD CONSTRAINT "agent_twilio_settings_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agent_configurations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."agent_twilio_settings"
+    ADD CONSTRAINT "agent_twilio_settings_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."appointments"
+    ADD CONSTRAINT "appointments_call_id_fkey" FOREIGN KEY ("call_id") REFERENCES "public"."calls"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."appointments"
+    ADD CONSTRAINT "appointments_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."audit_logs"
+    ADD CONSTRAINT "audit_logs_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."audit_logs"
+    ADD CONSTRAINT "audit_logs_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."call_logs"
+    ADD CONSTRAINT "call_logs_agent_id_fkey" FOREIGN KEY ("agent_id") REFERENCES "public"."agent_configurations"("id") ON DELETE SET NULL;
+
+
+
+ALTER TABLE ONLY "public"."call_logs"
+    ADD CONSTRAINT "call_logs_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."calls"
+    ADD CONSTRAINT "calls_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."organization_members"
+    ADD CONSTRAINT "organization_members_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."organization_members"
+    ADD CONSTRAINT "organization_members_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."organization_settings"
+    ADD CONSTRAINT "organization_settings_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."tasks"
+    ADD CONSTRAINT "tasks_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."twilio_settings"
+    ADD CONSTRAINT "twilio_settings_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."twilio_settings"
+    ADD CONSTRAINT "twilio_settings_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."users"
+    ADD CONSTRAINT "users_id_fkey" FOREIGN KEY ("id") REFERENCES "auth"."users"("id");
+
+
+
+ALTER TABLE ONLY "public"."webhook_logs"
+    ADD CONSTRAINT "webhook_logs_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+ALTER TABLE ONLY "public"."webhook_rate_limits"
+    ADD CONSTRAINT "webhook_rate_limits_organization_id_fkey" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE CASCADE;
+
+
+
+CREATE POLICY "Admins can manage agent twilio settings" ON "public"."agent_twilio_settings" USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members" "om"
+  WHERE (("om"."organization_id" = "agent_twilio_settings"."organization_id") AND ("om"."user_id" = "auth"."uid"()) AND ("om"."role" = ANY (ARRAY['owner'::"text", 'admin'::"text"])))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM "public"."organization_members" "om"
+  WHERE (("om"."organization_id" = "agent_twilio_settings"."organization_id") AND ("om"."user_id" = "auth"."uid"()) AND ("om"."role" = ANY (ARRAY['owner'::"text", 'admin'::"text"]))))));
+
+
+
+CREATE POLICY "Authenticated users can create organizations" ON "public"."organizations" FOR INSERT WITH CHECK (("auth"."uid"() IS NOT NULL));
+
+
+
+CREATE POLICY "Members can read agent twilio settings" ON "public"."agent_twilio_settings" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members" "om"
+  WHERE (("om"."organization_id" = "agent_twilio_settings"."organization_id") AND ("om"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Organizations can view their own rate limits" ON "public"."webhook_rate_limits" FOR SELECT USING (("organization_id" IN ( SELECT "organizations"."id"
+   FROM "public"."organizations"
+  WHERE ("organizations"."id" = "webhook_rate_limits"."organization_id"))));
+
+
+
+CREATE POLICY "Organizations can view their own webhook logs" ON "public"."webhook_logs" FOR SELECT USING (("organization_id" IN ( SELECT "organizations"."id"
+   FROM "public"."organizations"
+  WHERE ("organizations"."id" = "webhook_logs"."organization_id"))));
+
+
+
+CREATE POLICY "Owners can update their organizations" ON "public"."organizations" FOR UPDATE USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "organizations"."id") AND ("organization_members"."user_id" = "auth"."uid"()) AND ("organization_members"."role" = 'owner'::"text")))));
+
+
+
+CREATE POLICY "System can insert audit logs" ON "public"."audit_logs" FOR INSERT WITH CHECK (true);
+
+
+
+CREATE POLICY "System can insert call logs" ON "public"."call_logs" FOR INSERT WITH CHECK (true);
+
+
+
+CREATE POLICY "System can update call logs" ON "public"."call_logs" FOR UPDATE USING (true) WITH CHECK (true);
+
+
+
+CREATE POLICY "Users can create agents for their organization" ON "public"."agent_configurations" FOR INSERT WITH CHECK ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "agent_configurations"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can create their own tasks." ON "public"."tasks" FOR INSERT WITH CHECK (("auth"."uid"() = "user_id"));
+
+
+
+CREATE POLICY "Users can delete their organization's agents" ON "public"."agent_configurations" FOR DELETE USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "agent_configurations"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"()) AND ("organization_members"."role" = 'owner'::"text")))));
+
+
+
+CREATE POLICY "Users can delete their own tasks." ON "public"."tasks" FOR DELETE USING (("auth"."uid"() = "user_id"));
+
+
+
+CREATE POLICY "Users can manage calendars for their organization's agents" ON "public"."agent_calendars" USING ((EXISTS ( SELECT 1
+   FROM ("public"."agent_configurations" "ac"
+     JOIN "public"."organization_members" "om" ON (("om"."organization_id" = "ac"."organization_id")))
+  WHERE (("ac"."id" = "agent_calendars"."agent_id") AND ("om"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can manage their organization's Twilio settings" ON "public"."twilio_settings" USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "twilio_settings"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"()) AND ("organization_members"."role" = ANY (ARRAY['owner'::"text", 'admin'::"text"])))))) WITH CHECK ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "twilio_settings"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"()) AND ("organization_members"."role" = ANY (ARRAY['owner'::"text", 'admin'::"text"]))))));
+
+
+
+CREATE POLICY "Users can manage their own memberships" ON "public"."organization_members" USING (("auth"."uid"() = "user_id"));
+
+
+
+CREATE POLICY "Users can read their own profile." ON "public"."users" FOR SELECT USING (("auth"."uid"() = "id"));
+
+
+
+CREATE POLICY "Users can read their own tasks." ON "public"."tasks" FOR SELECT USING (("auth"."uid"() = "user_id"));
+
+
+
+CREATE POLICY "Users can update their organization's agents" ON "public"."agent_configurations" FOR UPDATE USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "agent_configurations"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can update their own tasks." ON "public"."tasks" FOR UPDATE USING (("auth"."uid"() = "user_id")) WITH CHECK (("auth"."uid"() = "user_id"));
+
+
+
+CREATE POLICY "Users can view calendars for their organization's agents" ON "public"."agent_calendars" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM ("public"."agent_configurations" "ac"
+     JOIN "public"."organization_members" "om" ON (("om"."organization_id" = "ac"."organization_id")))
+  WHERE (("ac"."id" = "agent_calendars"."agent_id") AND ("om"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can view organizations they belong to" ON "public"."organizations" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "organizations"."id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can view their organization's Twilio settings" ON "public"."twilio_settings" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "twilio_settings"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can view their organization's agents" ON "public"."agent_configurations" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "agent_configurations"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can view their organization's audit logs" ON "public"."audit_logs" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "audit_logs"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can view their organization's call logs" ON "public"."call_logs" FOR SELECT USING ((EXISTS ( SELECT 1
+   FROM "public"."organization_members"
+  WHERE (("organization_members"."organization_id" = "call_logs"."organization_id") AND ("organization_members"."user_id" = "auth"."uid"())))));
+
+
+
+CREATE POLICY "Users can view their own organization memberships" ON "public"."organization_members" FOR SELECT USING (("auth"."uid"() = "user_id"));
+
+
+
+ALTER TABLE "public"."agent_calendars" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."agent_configurations" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."agent_twilio_settings" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."audit_logs" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."call_logs" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."organization_members" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."tasks" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."twilio_settings" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."users" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."webhook_logs" ENABLE ROW LEVEL SECURITY;
+
+
+ALTER TABLE "public"."webhook_rate_limits" ENABLE ROW LEVEL SECURITY;
+
+
+
+
+ALTER PUBLICATION "supabase_realtime" OWNER TO "postgres";
+
+
+
+
+
+GRANT USAGE ON SCHEMA "public" TO "postgres";
+GRANT USAGE ON SCHEMA "public" TO "anon";
+GRANT USAGE ON SCHEMA "public" TO "authenticated";
+GRANT USAGE ON SCHEMA "public" TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey16_in"("cstring") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey16_in"("cstring") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey16_in"("cstring") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey16_in"("cstring") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey16_out"("public"."gbtreekey16") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey16_out"("public"."gbtreekey16") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey16_out"("public"."gbtreekey16") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey16_out"("public"."gbtreekey16") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey2_in"("cstring") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey2_in"("cstring") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey2_in"("cstring") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey2_in"("cstring") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey2_out"("public"."gbtreekey2") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey2_out"("public"."gbtreekey2") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey2_out"("public"."gbtreekey2") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey2_out"("public"."gbtreekey2") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey32_in"("cstring") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey32_in"("cstring") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey32_in"("cstring") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey32_in"("cstring") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey32_out"("public"."gbtreekey32") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey32_out"("public"."gbtreekey32") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey32_out"("public"."gbtreekey32") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey32_out"("public"."gbtreekey32") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey4_in"("cstring") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey4_in"("cstring") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey4_in"("cstring") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey4_in"("cstring") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey4_out"("public"."gbtreekey4") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey4_out"("public"."gbtreekey4") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey4_out"("public"."gbtreekey4") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey4_out"("public"."gbtreekey4") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey8_in"("cstring") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey8_in"("cstring") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey8_in"("cstring") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey8_in"("cstring") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey8_out"("public"."gbtreekey8") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey8_out"("public"."gbtreekey8") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey8_out"("public"."gbtreekey8") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey8_out"("public"."gbtreekey8") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_in"("cstring") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_in"("cstring") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_in"("cstring") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_in"("cstring") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_out"("public"."gbtreekey_var") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_out"("public"."gbtreekey_var") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_out"("public"."gbtreekey_var") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbtreekey_var_out"("public"."gbtreekey_var") TO "service_role";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+GRANT ALL ON FUNCTION "public"."cash_dist"("money", "money") TO "postgres";
+GRANT ALL ON FUNCTION "public"."cash_dist"("money", "money") TO "anon";
+GRANT ALL ON FUNCTION "public"."cash_dist"("money", "money") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."cash_dist"("money", "money") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."check_webhook_rate_limit"("p_organization_id" "uuid", "p_minute_limit" integer, "p_hour_limit" integer) TO "anon";
+GRANT ALL ON FUNCTION "public"."check_webhook_rate_limit"("p_organization_id" "uuid", "p_minute_limit" integer, "p_hour_limit" integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."check_webhook_rate_limit"("p_organization_id" "uuid", "p_minute_limit" integer, "p_hour_limit" integer) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."create_default_agent_for_organization"() TO "anon";
+GRANT ALL ON FUNCTION "public"."create_default_agent_for_organization"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."create_default_agent_for_organization"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."create_organization_for_user"("user_id" "uuid", "org_name" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."create_organization_for_user"("user_id" "uuid", "org_name" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."create_organization_for_user"("user_id" "uuid", "org_name" "text") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."create_user_profile"() TO "anon";
+GRANT ALL ON FUNCTION "public"."create_user_profile"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."create_user_profile"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."date_dist"("date", "date") TO "postgres";
+GRANT ALL ON FUNCTION "public"."date_dist"("date", "date") TO "anon";
+GRANT ALL ON FUNCTION "public"."date_dist"("date", "date") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."date_dist"("date", "date") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."decrypt_google_token"("encrypted_token" "text", "agent_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."decrypt_google_token"("encrypted_token" "text", "agent_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."decrypt_google_token"("encrypted_token" "text", "agent_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."disconnect_agent_google_calendar"("p_agent_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."disconnect_agent_google_calendar"("p_agent_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."disconnect_agent_google_calendar"("p_agent_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."encrypt_google_token"("token" "text", "agent_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."encrypt_google_token"("token" "text", "agent_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."encrypt_google_token"("token" "text", "agent_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."float4_dist"(real, real) TO "postgres";
+GRANT ALL ON FUNCTION "public"."float4_dist"(real, real) TO "anon";
+GRANT ALL ON FUNCTION "public"."float4_dist"(real, real) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."float4_dist"(real, real) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."float8_dist"(double precision, double precision) TO "postgres";
+GRANT ALL ON FUNCTION "public"."float8_dist"(double precision, double precision) TO "anon";
+GRANT ALL ON FUNCTION "public"."float8_dist"(double precision, double precision) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."float8_dist"(double precision, double precision) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bit_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bit_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bit_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bit_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bit_consistent"("internal", bit, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bit_consistent"("internal", bit, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bit_consistent"("internal", bit, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bit_consistent"("internal", bit, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bit_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bit_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bit_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bit_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bit_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bit_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bit_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bit_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bit_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bit_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bit_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bit_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bit_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bit_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bit_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bit_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_consistent"("internal", boolean, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_consistent"("internal", boolean, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_consistent"("internal", boolean, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_consistent"("internal", boolean, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_same"("public"."gbtreekey2", "public"."gbtreekey2", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_same"("public"."gbtreekey2", "public"."gbtreekey2", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_same"("public"."gbtreekey2", "public"."gbtreekey2", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_same"("public"."gbtreekey2", "public"."gbtreekey2", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bool_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bool_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bool_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bool_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_consistent"("internal", character, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_consistent"("internal", character, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_consistent"("internal", character, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bpchar_consistent"("internal", character, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bytea_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bytea_consistent"("internal", "bytea", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_consistent"("internal", "bytea", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_consistent"("internal", "bytea", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_consistent"("internal", "bytea", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bytea_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bytea_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bytea_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_bytea_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_bytea_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_consistent"("internal", "money", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_consistent"("internal", "money", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_consistent"("internal", "money", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_consistent"("internal", "money", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_distance"("internal", "money", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_distance"("internal", "money", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_distance"("internal", "money", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_distance"("internal", "money", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_cash_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_cash_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_cash_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_cash_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_consistent"("internal", "date", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_consistent"("internal", "date", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_consistent"("internal", "date", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_consistent"("internal", "date", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_distance"("internal", "date", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_distance"("internal", "date", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_distance"("internal", "date", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_distance"("internal", "date", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_date_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_date_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_date_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_date_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_decompress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_decompress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_decompress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_decompress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_consistent"("internal", "anyenum", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_consistent"("internal", "anyenum", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_consistent"("internal", "anyenum", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_consistent"("internal", "anyenum", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_enum_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_enum_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_enum_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_enum_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_consistent"("internal", real, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_consistent"("internal", real, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_consistent"("internal", real, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_consistent"("internal", real, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_distance"("internal", real, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_distance"("internal", real, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_distance"("internal", real, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_distance"("internal", real, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float4_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float4_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float4_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float4_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_consistent"("internal", double precision, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_consistent"("internal", double precision, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_consistent"("internal", double precision, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_consistent"("internal", double precision, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_distance"("internal", double precision, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_distance"("internal", double precision, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_distance"("internal", double precision, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_distance"("internal", double precision, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_float8_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_float8_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_float8_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_float8_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_inet_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_inet_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_inet_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_inet_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_inet_consistent"("internal", "inet", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_inet_consistent"("internal", "inet", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_inet_consistent"("internal", "inet", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_inet_consistent"("internal", "inet", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_inet_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_inet_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_inet_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_inet_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_inet_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_inet_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_inet_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_inet_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_inet_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_inet_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_inet_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_inet_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_inet_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_inet_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_inet_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_inet_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_consistent"("internal", smallint, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_consistent"("internal", smallint, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_consistent"("internal", smallint, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_consistent"("internal", smallint, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_distance"("internal", smallint, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_distance"("internal", smallint, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_distance"("internal", smallint, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_distance"("internal", smallint, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_same"("public"."gbtreekey4", "public"."gbtreekey4", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_same"("public"."gbtreekey4", "public"."gbtreekey4", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_same"("public"."gbtreekey4", "public"."gbtreekey4", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_same"("public"."gbtreekey4", "public"."gbtreekey4", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int2_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int2_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int2_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int2_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_consistent"("internal", integer, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_consistent"("internal", integer, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_consistent"("internal", integer, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_consistent"("internal", integer, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_distance"("internal", integer, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_distance"("internal", integer, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_distance"("internal", integer, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_distance"("internal", integer, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int4_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int4_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int4_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int4_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_consistent"("internal", bigint, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_consistent"("internal", bigint, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_consistent"("internal", bigint, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_consistent"("internal", bigint, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_distance"("internal", bigint, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_distance"("internal", bigint, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_distance"("internal", bigint, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_distance"("internal", bigint, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_int8_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_int8_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_int8_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_int8_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_consistent"("internal", interval, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_consistent"("internal", interval, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_consistent"("internal", interval, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_consistent"("internal", interval, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_decompress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_decompress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_decompress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_decompress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_distance"("internal", interval, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_distance"("internal", interval, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_distance"("internal", interval, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_distance"("internal", interval, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_intv_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_intv_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_intv_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_intv_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_consistent"("internal", "macaddr8", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_consistent"("internal", "macaddr8", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_consistent"("internal", "macaddr8", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_consistent"("internal", "macaddr8", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad8_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad8_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_consistent"("internal", "macaddr", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_consistent"("internal", "macaddr", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_consistent"("internal", "macaddr", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_consistent"("internal", "macaddr", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_macad_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_macad_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_macad_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_macad_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_numeric_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_numeric_consistent"("internal", numeric, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_consistent"("internal", numeric, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_consistent"("internal", numeric, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_consistent"("internal", numeric, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_numeric_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_numeric_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_numeric_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_numeric_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_numeric_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_consistent"("internal", "oid", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_consistent"("internal", "oid", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_consistent"("internal", "oid", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_consistent"("internal", "oid", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_distance"("internal", "oid", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_distance"("internal", "oid", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_distance"("internal", "oid", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_distance"("internal", "oid", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_same"("public"."gbtreekey8", "public"."gbtreekey8", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_oid_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_oid_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_oid_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_oid_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_text_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_text_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_text_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_text_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_text_consistent"("internal", "text", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_text_consistent"("internal", "text", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_text_consistent"("internal", "text", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_text_consistent"("internal", "text", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_text_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_text_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_text_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_text_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_text_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_text_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_text_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_text_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_text_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_text_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_text_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_text_same"("public"."gbtreekey_var", "public"."gbtreekey_var", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_text_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_text_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_text_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_text_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_consistent"("internal", time without time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_consistent"("internal", time without time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_consistent"("internal", time without time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_consistent"("internal", time without time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_distance"("internal", time without time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_distance"("internal", time without time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_distance"("internal", time without time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_distance"("internal", time without time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_time_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_time_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_time_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_time_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_timetz_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_timetz_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_timetz_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_timetz_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_timetz_consistent"("internal", time with time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_timetz_consistent"("internal", time with time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_timetz_consistent"("internal", time with time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_timetz_consistent"("internal", time with time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_consistent"("internal", timestamp without time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_consistent"("internal", timestamp without time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_consistent"("internal", timestamp without time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_consistent"("internal", timestamp without time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_distance"("internal", timestamp without time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_distance"("internal", timestamp without time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_distance"("internal", timestamp without time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_distance"("internal", timestamp without time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_same"("public"."gbtreekey16", "public"."gbtreekey16", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_ts_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_ts_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_ts_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_ts_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_tstz_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_tstz_consistent"("internal", timestamp with time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_consistent"("internal", timestamp with time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_consistent"("internal", timestamp with time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_consistent"("internal", timestamp with time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_tstz_distance"("internal", timestamp with time zone, smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_distance"("internal", timestamp with time zone, smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_distance"("internal", timestamp with time zone, smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_tstz_distance"("internal", timestamp with time zone, smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_compress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_compress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_compress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_compress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_consistent"("internal", "uuid", smallint, "oid", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_consistent"("internal", "uuid", smallint, "oid", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_consistent"("internal", "uuid", smallint, "oid", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_consistent"("internal", "uuid", smallint, "oid", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_penalty"("internal", "internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_penalty"("internal", "internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_penalty"("internal", "internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_penalty"("internal", "internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_picksplit"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_picksplit"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_picksplit"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_picksplit"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_same"("public"."gbtreekey32", "public"."gbtreekey32", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_uuid_union"("internal", "internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_union"("internal", "internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_union"("internal", "internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_uuid_union"("internal", "internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_var_decompress"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_var_decompress"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_var_decompress"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_var_decompress"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."gbt_var_fetch"("internal") TO "postgres";
+GRANT ALL ON FUNCTION "public"."gbt_var_fetch"("internal") TO "anon";
+GRANT ALL ON FUNCTION "public"."gbt_var_fetch"("internal") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."gbt_var_fetch"("internal") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."generate_webhook_secret"() TO "anon";
+GRANT ALL ON FUNCTION "public"."generate_webhook_secret"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."generate_webhook_secret"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."generate_webhook_token"() TO "anon";
+GRANT ALL ON FUNCTION "public"."generate_webhook_token"() TO "authenticated";
+GRANT ALL ON FUNCTION "public"."generate_webhook_token"() TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."get_agent_google_tokens"("p_agent_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."get_agent_google_tokens"("p_agent_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_agent_google_tokens"("p_agent_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."get_user_default_organization"("user_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."get_user_default_organization"("user_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_user_default_organization"("user_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."get_user_organizations"("user_id" "uuid") TO "anon";
+GRANT ALL ON FUNCTION "public"."get_user_organizations"("user_id" "uuid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."get_user_organizations"("user_id" "uuid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."has_permission"("p_user_id" "uuid", "p_org_id" "uuid", "p_permission" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."has_permission"("p_user_id" "uuid", "p_org_id" "uuid", "p_permission" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."has_permission"("p_user_id" "uuid", "p_org_id" "uuid", "p_permission" "text") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."int2_dist"(smallint, smallint) TO "postgres";
+GRANT ALL ON FUNCTION "public"."int2_dist"(smallint, smallint) TO "anon";
+GRANT ALL ON FUNCTION "public"."int2_dist"(smallint, smallint) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."int2_dist"(smallint, smallint) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."int4_dist"(integer, integer) TO "postgres";
+GRANT ALL ON FUNCTION "public"."int4_dist"(integer, integer) TO "anon";
+GRANT ALL ON FUNCTION "public"."int4_dist"(integer, integer) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."int4_dist"(integer, integer) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."int8_dist"(bigint, bigint) TO "postgres";
+GRANT ALL ON FUNCTION "public"."int8_dist"(bigint, bigint) TO "anon";
+GRANT ALL ON FUNCTION "public"."int8_dist"(bigint, bigint) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."int8_dist"(bigint, bigint) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."interval_dist"(interval, interval) TO "postgres";
+GRANT ALL ON FUNCTION "public"."interval_dist"(interval, interval) TO "anon";
+GRANT ALL ON FUNCTION "public"."interval_dist"(interval, interval) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."interval_dist"(interval, interval) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."oid_dist"("oid", "oid") TO "postgres";
+GRANT ALL ON FUNCTION "public"."oid_dist"("oid", "oid") TO "anon";
+GRANT ALL ON FUNCTION "public"."oid_dist"("oid", "oid") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."oid_dist"("oid", "oid") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."store_agent_google_tokens"("p_agent_id" "uuid", "p_access_token" "text", "p_refresh_token" "text", "p_expires_in" integer, "p_email" "text", "p_calendar_id" "text") TO "anon";
+GRANT ALL ON FUNCTION "public"."store_agent_google_tokens"("p_agent_id" "uuid", "p_access_token" "text", "p_refresh_token" "text", "p_expires_in" integer, "p_email" "text", "p_calendar_id" "text") TO "authenticated";
+GRANT ALL ON FUNCTION "public"."store_agent_google_tokens"("p_agent_id" "uuid", "p_access_token" "text", "p_refresh_token" "text", "p_expires_in" integer, "p_email" "text", "p_calendar_id" "text") TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."time_dist"(time without time zone, time without time zone) TO "postgres";
+GRANT ALL ON FUNCTION "public"."time_dist"(time without time zone, time without time zone) TO "anon";
+GRANT ALL ON FUNCTION "public"."time_dist"(time without time zone, time without time zone) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."time_dist"(time without time zone, time without time zone) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."ts_dist"(timestamp without time zone, timestamp without time zone) TO "postgres";
+GRANT ALL ON FUNCTION "public"."ts_dist"(timestamp without time zone, timestamp without time zone) TO "anon";
+GRANT ALL ON FUNCTION "public"."ts_dist"(timestamp without time zone, timestamp without time zone) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."ts_dist"(timestamp without time zone, timestamp without time zone) TO "service_role";
+
+
+
+GRANT ALL ON FUNCTION "public"."tstz_dist"(timestamp with time zone, timestamp with time zone) TO "postgres";
+GRANT ALL ON FUNCTION "public"."tstz_dist"(timestamp with time zone, timestamp with time zone) TO "anon";
+GRANT ALL ON FUNCTION "public"."tstz_dist"(timestamp with time zone, timestamp with time zone) TO "authenticated";
+GRANT ALL ON FUNCTION "public"."tstz_dist"(timestamp with time zone, timestamp with time zone) TO "service_role";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+GRANT ALL ON TABLE "public"."agent_calendars" TO "anon";
+GRANT ALL ON TABLE "public"."agent_calendars" TO "authenticated";
+GRANT ALL ON TABLE "public"."agent_calendars" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."agent_configurations" TO "anon";
+GRANT ALL ON TABLE "public"."agent_configurations" TO "authenticated";
+GRANT ALL ON TABLE "public"."agent_configurations" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."agent_twilio_settings" TO "anon";
+GRANT ALL ON TABLE "public"."agent_twilio_settings" TO "authenticated";
+GRANT ALL ON TABLE "public"."agent_twilio_settings" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."appointments" TO "anon";
+GRANT ALL ON TABLE "public"."appointments" TO "authenticated";
+GRANT ALL ON TABLE "public"."appointments" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."audit_logs" TO "anon";
+GRANT ALL ON TABLE "public"."audit_logs" TO "authenticated";
+GRANT ALL ON TABLE "public"."audit_logs" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."call_logs" TO "anon";
+GRANT ALL ON TABLE "public"."call_logs" TO "authenticated";
+GRANT ALL ON TABLE "public"."call_logs" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."calls" TO "anon";
+GRANT ALL ON TABLE "public"."calls" TO "authenticated";
+GRANT ALL ON TABLE "public"."calls" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."organizations" TO "anon";
+GRANT ALL ON TABLE "public"."organizations" TO "authenticated";
+GRANT ALL ON TABLE "public"."organizations" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."organization_demo_agents" TO "anon";
+GRANT ALL ON TABLE "public"."organization_demo_agents" TO "authenticated";
+GRANT ALL ON TABLE "public"."organization_demo_agents" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."organization_members" TO "anon";
+GRANT ALL ON TABLE "public"."organization_members" TO "authenticated";
+GRANT ALL ON TABLE "public"."organization_members" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."organization_settings" TO "anon";
+GRANT ALL ON TABLE "public"."organization_settings" TO "authenticated";
+GRANT ALL ON TABLE "public"."organization_settings" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."tasks" TO "anon";
+GRANT ALL ON TABLE "public"."tasks" TO "authenticated";
+GRANT ALL ON TABLE "public"."tasks" TO "service_role";
+
+
+
+GRANT ALL ON SEQUENCE "public"."tasks_id_seq" TO "anon";
+GRANT ALL ON SEQUENCE "public"."tasks_id_seq" TO "authenticated";
+GRANT ALL ON SEQUENCE "public"."tasks_id_seq" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."twilio_settings" TO "anon";
+GRANT ALL ON TABLE "public"."twilio_settings" TO "authenticated";
+GRANT ALL ON TABLE "public"."twilio_settings" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."users" TO "anon";
+GRANT ALL ON TABLE "public"."users" TO "authenticated";
+GRANT ALL ON TABLE "public"."users" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."webhook_logs" TO "anon";
+GRANT ALL ON TABLE "public"."webhook_logs" TO "authenticated";
+GRANT ALL ON TABLE "public"."webhook_logs" TO "service_role";
+
+
+
+GRANT ALL ON TABLE "public"."webhook_rate_limits" TO "anon";
+GRANT ALL ON TABLE "public"."webhook_rate_limits" TO "authenticated";
+GRANT ALL ON TABLE "public"."webhook_rate_limits" TO "service_role";
+
+
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES  TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES  TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES  TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON SEQUENCES  TO "service_role";
+
+
+
+
+
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS  TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS  TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS  TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON FUNCTIONS  TO "service_role";
+
+
+
+
+
+
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES  TO "postgres";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES  TO "anon";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES  TO "authenticated";
+ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT ALL ON TABLES  TO "service_role";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+RESET ALL;

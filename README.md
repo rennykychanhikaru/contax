@@ -16,3 +16,7 @@ Currently, the following packages are available:
 2. [Next.js Data Loader SDK for Supabase](https://github.com/makerkit/makerkit/tree/main/packages/data-loader/supabase/nextjs)
 3. [Remix Data Loader SDK for Supabase](https://github.com/makerkit/makerkit/tree/main/packages/data-loader/supabase/remix)
 4. [QStash Task Queue](https://github.com/makerkit/makerkit/tree/main/packages/qstash)
+
+## Docs
+
+- Agent-Level Twilio: see `docs/SMOKE-TEST-AGENT-TWILIO.md` for a smoke test guide covering per-agent configuration, agent-first outbound routing with org fallback, and encrypted storage verification.

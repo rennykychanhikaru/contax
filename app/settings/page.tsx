@@ -54,6 +54,11 @@ export default async function SettingsPage() {
               <p className="text-sm text-gray-400 mb-4">
                 Connect your Twilio account to enable SMS and voice call features for appointment reminders and notifications.
               </p>
+              <div className="p-3 mb-4 rounded-md border border-yellow-700 bg-yellow-900/20">
+                <p className="text-sm text-yellow-500">
+                  Note: Agent-level Twilio settings override organization-level configuration. Configure per-agent Twilio on the Agent Settings page.
+                </p>
+              </div>
               
               <TwilioIntegrationForm userId={user.id} />
               

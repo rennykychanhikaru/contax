@@ -3,7 +3,7 @@
 
 **Author:** Gemini
 **Date:** 2025-09-20
-**Status:** Draft
+**Status:** In Progress
 
 ## 1. Overview
 
@@ -18,6 +18,10 @@ Currently, the platform uses a single Twilio account for all agents within an or
 *   Isolate Twilio configurations for different teams or use cases.
 
 By moving Twilio configuration to the agent level, we will empower our users with greater flexibility and control over their telephony infrastructure.
+
+## Change Log
+
+- 2025-09-20: Revised milestones for agent-first rollout, encryption at rest, org-level fallback and observability. Added sections 7–19 (Reality Check, Architecture, Data Model, API, Outbound Logic, UI, Encryption, Observability, Migration, Security Notes, Testing, Acceptance Criteria, Risks).
 
 ## 3. Goals
 
@@ -38,9 +42,9 @@ By moving Twilio configuration to the agent level, we will empower our users wit
 
 **Sub-milestones:**
 
-*   [ ] 1.1: Create a new `agent_twilio_settings` table (agent-scoped). Store Twilio Account SID, encrypted Auth Token, and phone number per agent.
-*   [ ] 1.2: Add FKs to `agent_configurations(id)` and `organizations(id)`; enforce `UNIQUE(agent_id)` and consider `UNIQUE(organization_id, phone_number)` to prevent number collisions within an org.
-*   [ ] 1.3: Add RLS policies mirroring `organization_members` permissions (read for members, write for admin/owner) and indexes for `agent_id`, `organization_id`, and `phone_number`.
+*   [x] 1.1: Create a new `agent_twilio_settings` table (agent-scoped). Store Twilio Account SID, encrypted Auth Token, and phone number per agent.
+*   [x] 1.2: Add FKs to `agent_configurations(id)` and `organizations(id)`; enforce `UNIQUE(agent_id)` and consider `UNIQUE(organization_id, phone_number)` to prevent number collisions within an org.
+*   [x] 1.3: Add RLS policies mirroring `organization_members` permissions (read for members, write for admin/owner) and indexes for `agent_id`, `organization_id`, and `phone_number`.
 *   [ ] 1.4: Do NOT drop `twilio_settings` yet. Keep it during migration for fallback and gradual rollout.
 *   [ ] 1.5: Optional backfill: seed the default agent’s settings from `twilio_settings` to accelerate adoption.
 
@@ -101,14 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_agent_twilio_phone ON public.agent_twilio_setting
 
 **Sub-milestones:**
 
-*   [ ] 2.1: Create new API endpoints for managing agent-level Twilio settings (CRUD):
+*   [x] 2.1: Create new API endpoints for managing agent-level Twilio settings (CRUD):
     * `POST /api/agents/[agent_id]/twilio`
     * `GET /api/agents/[agent_id]/twilio`
     * `DELETE /api/agents/[agent_id]/twilio`
     - Validate inputs (Account SID, E.164 phone number), mask token on GET, and encrypt token at rest.
     - Enforce permissions via RLS and server-side checks (org membership and admin/owner role for write).
-*   [ ] 2.2: Implement at-rest encryption for the `auth_token_encrypted` field using AES‑256‑GCM (`lib/security/crypto.encrypt`), and store `encryption_version`.
-*   [ ] 2.3: Update outbound call routes to be agent-first with org-level fallback.
+*   [x] 2.2: Implement at-rest encryption for the `auth_token_encrypted` field using AES‑256‑GCM (`lib/security/crypto.encrypt`), and store `encryption_version`.
+*   [x] 2.3: Update outbound call routes to be agent-first with org-level fallback.
     - Resolve credentials in the route (not inside the adapter) by `agentId` → `agent_twilio_settings`, else fallback to `twilio_settings` (feature-flagged during migration).
     - Persist `call_sid`, `agent_id`, and `organization_id` when initiating calls to enable status mapping.
 
@@ -118,9 +122,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_twilio_phone ON public.agent_twilio_setting
 
 **Sub-milestones:**
 
-*   [ ] 3.1: Create a new `AgentTwilioSettingsForm` component (agent-scoped), modeled on `TwilioIntegrationForm`, with masked token behavior and clear validation states.
-*   [ ] 3.2: Integrate `AgentTwilioSettingsForm` into `app/agent-settings/page.tsx`; gate call triggers if agent lacks config and surface a CTA to configure.
-*   [ ] 3.3: Keep the org-level `TwilioIntegrationForm` temporarily with a banner indicating: “Agent-level Twilio overrides org-level during migration.” Remove later.
+*   [x] 3.1: Create a new `AgentTwilioSettingsForm` component (agent-scoped), modeled on `TwilioIntegrationForm`, with masked token behavior and clear validation states.
+*   [x] 3.2: Integrate `AgentTwilioSettingsForm` into `app/agent-settings/page.tsx`; show a notice if the agent lacks configuration.
+*   [x] 3.3: Keep the org-level `TwilioIntegrationForm` temporarily with a banner indicating: “Agent-level Twilio overrides org-level during migration.” Remove later.
 
 **Pseudocode (React):**
 

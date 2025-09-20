@@ -34,12 +34,77 @@ export type Database = {
   }
   public: {
     Tables: {
+      agent_calendars: {
+        Row: {
+          access_role: string | null
+          agent_id: string
+          background_color: string | null
+          calendar_email: string | null
+          calendar_id: string
+          calendar_name: string | null
+          created_at: string | null
+          foreground_color: string | null
+          id: string
+          is_primary: boolean | null
+          updated_at: string | null
+        }
+        Insert: {
+          access_role?: string | null
+          agent_id: string
+          background_color?: string | null
+          calendar_email?: string | null
+          calendar_id: string
+          calendar_name?: string | null
+          created_at?: string | null
+          foreground_color?: string | null
+          id?: string
+          is_primary?: boolean | null
+          updated_at?: string | null
+        }
+        Update: {
+          access_role?: string | null
+          agent_id?: string
+          background_color?: string | null
+          calendar_email?: string | null
+          calendar_id?: string
+          calendar_name?: string | null
+          created_at?: string | null
+          foreground_color?: string | null
+          id?: string
+          is_primary?: boolean | null
+          updated_at?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_calendars_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agent_configurations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_calendars_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "organization_demo_agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       agent_configurations: {
         Row: {
           agent_type: string | null
           created_at: string | null
           description: string | null
           display_name: string | null
+          google_calendar_access_token_encrypted: string | null
+          google_calendar_connected: boolean | null
+          google_calendar_connected_at: string | null
+          google_calendar_email: string | null
+          google_calendar_id: string | null
+          google_calendar_last_sync: string | null
+          google_calendar_refresh_token_encrypted: string | null
+          google_calendar_token_expiry: number | null
           greeting: string
           id: string
           is_default: boolean | null
@@ -61,6 +126,14 @@ export type Database = {
           created_at?: string | null
           description?: string | null
           display_name?: string | null
+          google_calendar_access_token_encrypted?: string | null
+          google_calendar_connected?: boolean | null
+          google_calendar_connected_at?: string | null
+          google_calendar_email?: string | null
+          google_calendar_id?: string | null
+          google_calendar_last_sync?: string | null
+          google_calendar_refresh_token_encrypted?: string | null
+          google_calendar_token_expiry?: number | null
           greeting: string
           id?: string
           is_default?: boolean | null
@@ -82,6 +155,14 @@ export type Database = {
           created_at?: string | null
           description?: string | null
           display_name?: string | null
+          google_calendar_access_token_encrypted?: string | null
+          google_calendar_connected?: boolean | null
+          google_calendar_connected_at?: string | null
+          google_calendar_email?: string | null
+          google_calendar_id?: string | null
+          google_calendar_last_sync?: string | null
+          google_calendar_refresh_token_encrypted?: string | null
+          google_calendar_token_expiry?: number | null
           greeting?: string
           id?: string
           is_default?: boolean | null
@@ -101,6 +182,64 @@ export type Database = {
         Relationships: [
           {
             foreignKeyName: "agent_configurations_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      agent_twilio_settings: {
+        Row: {
+          account_sid: string
+          agent_id: string
+          auth_token_encrypted: string
+          created_at: string
+          encryption_version: string
+          id: string
+          organization_id: string
+          phone_number: string
+          updated_at: string
+        }
+        Insert: {
+          account_sid: string
+          agent_id: string
+          auth_token_encrypted: string
+          created_at?: string
+          encryption_version?: string
+          id?: string
+          organization_id: string
+          phone_number: string
+          updated_at?: string
+        }
+        Update: {
+          account_sid?: string
+          agent_id?: string
+          auth_token_encrypted?: string
+          created_at?: string
+          encryption_version?: string
+          id?: string
+          organization_id?: string
+          phone_number?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "agent_twilio_settings_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: true
+            referencedRelation: "agent_configurations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_twilio_settings_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: true
+            referencedRelation: "organization_demo_agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "agent_twilio_settings_organization_id_fkey"
             columns: ["organization_id"]
             isOneToOne: false
             referencedRelation: "organizations"
@@ -730,6 +869,26 @@ export type Database = {
         }
         Returns: string
       }
+      decrypt_google_token: {
+        Args: {
+          encrypted_token: string
+          agent_id: string
+        }
+        Returns: string
+      }
+      disconnect_agent_google_calendar: {
+        Args: {
+          p_agent_id: string
+        }
+        Returns: boolean
+      }
+      encrypt_google_token: {
+        Args: {
+          token: string
+          agent_id: string
+        }
+        Returns: string
+      }
       gbt_bit_compress: {
         Args: {
           "": unknown
@@ -1074,6 +1233,20 @@ export type Database = {
         Args: Record<PropertyKey, never>
         Returns: string
       }
+      get_agent_google_tokens: {
+        Args: {
+          p_agent_id: string
+        }
+        Returns: {
+          access_token: string
+          refresh_token: string
+          token_expiry: number
+          is_expired: boolean
+          calendar_email: string
+          calendar_id: string
+          connected: boolean
+        }[]
+      }
       get_user_default_organization: {
         Args: {
           user_id: string
@@ -1099,6 +1272,17 @@ export type Database = {
           p_user_id: string
           p_org_id: string
           p_permission: string
+        }
+        Returns: boolean
+      }
+      store_agent_google_tokens: {
+        Args: {
+          p_agent_id: string
+          p_access_token: string
+          p_refresh_token: string
+          p_expires_in: number
+          p_email?: string
+          p_calendar_id?: string
         }
         Returns: boolean
       }

@@ -2,6 +2,20 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { TwilioTelephonyAdapter } from '../../../../lib/telephony/twilio';
+import { decrypt } from '../../../../lib/security/crypto';
+
+type AgentTwilioRow = {
+  organization_id: string;
+  account_sid: string;
+  auth_token_encrypted: string;
+  phone_number: string;
+};
+
+type OrgTwilioRow = {
+  account_sid: string;
+  auth_token: string;
+  phone_number: string;
+};
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,40 +49,58 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    // Get organization ID if not provided
-    let orgId = organizationId;
-    if (!orgId && userId) {
-      const { data: member } = await supabase
-        .from('organization_members')
-        .select('organization_id')
-        .eq('user_id', userId)
+    // Resolve credentials: agent-first, then org fallback
+    let orgId = organizationId as string | undefined;
+    let accountSid: string | undefined;
+    let authToken: string | undefined;
+    let fromNumber: string | undefined;
+
+    // If agentId provided, try agent-level settings
+    if (agentId) {
+      const { data: agentRow } = await supabase
+        .from<AgentTwilioRow>('agent_twilio_settings')
+        .select('organization_id, account_sid, auth_token_encrypted, phone_number')
+        .eq('agent_id', agentId)
         .single();
-      
-      if (member) {
-        orgId = member.organization_id;
+      if (agentRow) {
+        orgId = orgId || agentRow.organization_id;
+        accountSid = agentRow.account_sid;
+        authToken = await decrypt(agentRow.auth_token_encrypted);
+        fromNumber = agentRow.phone_number;
       }
     }
 
-    if (!orgId) {
-      return NextResponse.json({ error: 'Organization ID is required' }, { status: 400 });
-    }
-
-    // Get Twilio settings for the organization
-    const { data: twilioSettings, error: settingsError } = await supabase
-      .from('twilio_settings')
-      .select('account_sid, auth_token, phone_number')
-      .eq('organization_id', orgId)
-      .single();
-
-    if (settingsError || !twilioSettings) {
-      return NextResponse.json({ error: 'Twilio settings not found for organization' }, { status: 404 });
+    // If not found or no agentId, resolve org-level
+    if (!accountSid || !authToken || !fromNumber) {
+      if (!orgId && userId) {
+        const { data: member } = await supabase
+          .from<{ organization_id: string }>('organization_members')
+          .select('organization_id')
+          .eq('user_id', userId)
+          .single();
+        if (member) orgId = member.organization_id;
+      }
+      if (!orgId) {
+        return NextResponse.json({ error: 'Organization ID is required' }, { status: 400 });
+      }
+      const { data: twilioSettings, error: settingsError } = await supabase
+        .from<OrgTwilioRow>('twilio_settings')
+        .select('account_sid, auth_token, phone_number')
+        .eq('organization_id', orgId)
+        .single();
+      if (settingsError || !twilioSettings) {
+        return NextResponse.json({ error: 'Twilio settings not found for organization' }, { status: 404 });
+      }
+      accountSid = twilioSettings.account_sid;
+      authToken = twilioSettings.auth_token;
+      fromNumber = twilioSettings.phone_number;
     }
 
     // Initialize Twilio adapter
     const twilioAdapter = new TwilioTelephonyAdapter({
-      accountSid: twilioSettings.account_sid,
-      authToken: twilioSettings.auth_token,
-      phoneNumber: twilioSettings.phone_number,
+      accountSid: accountSid!,
+      authToken: authToken!,
+      phoneNumber: fromNumber!,
     });
 
     // Get the base URL for callbacks
@@ -77,7 +109,7 @@ export async function POST(req: NextRequest) {
     // Create the outgoing call using the adapter
     await twilioAdapter.startOutboundCall(phoneNumber, {
       baseUrl,
-      organizationId: orgId,
+      organizationId: orgId!,
       agentId: agentId || 'default',
     });
     
@@ -93,8 +125,9 @@ export async function POST(req: NextRequest) {
       .from('call_logs')
       .insert({
         organization_id: orgId,
+        agent_id: agentId || null,
         call_sid: callSid,
-        from_number: twilioSettings.phone_number,
+        from_number: fromNumber,
         to_number: phoneNumber,
         direction: 'outbound',
         status: 'initiated',
@@ -106,7 +139,7 @@ export async function POST(req: NextRequest) {
       callSid: callSid,
       status: 'initiated',
       to: phoneNumber,
-      from: twilioSettings.phone_number,
+      from: fromNumber,
     });
   } catch (error) {
     console.error('Error creating outgoing call:', error);
