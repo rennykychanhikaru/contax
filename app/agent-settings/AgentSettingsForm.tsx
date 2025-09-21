@@ -1,20 +1,20 @@
 'use client';
 
-import { Button } from '../../components/ui/button';
-import { Label } from '../../components/ui/label';
-import { Textarea } from '../../components/ui/textarea';
-import { Alert, AlertDescription } from '../../components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, Save, RotateCcw, Info, Volume2 } from 'lucide-react';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import CalendarIntegration from './CalendarIntegration';
 import WebhookSettings from './WebhookSettings';
-import { useAgentSettings } from '../../lib/hooks/useAgentSettings';
+import { useAgentSettings } from '@/lib/hooks/useAgentSettings';
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from '../../components/ui/tooltip';
+} from '@/components/ui/tooltip';
 
 // Available OpenAI voices for the Realtime API
 const VOICE_OPTIONS = [
@@ -25,21 +25,21 @@ const VOICE_OPTIONS = [
   { value: 'verse', label: 'Verse - Male (Energetic, expressive)' },
 ];
 
-export default function AgentSettingsForm() {
+export default function AgentSettingsForm({ agentId }: { agentId: string | null }) {
   const {
-    agentId,
     displayName, setDisplayName,
     prompt, setPrompt,
     greeting, setGreeting,
     voice, setVoice,
     webhookEnabled, setWebhookEnabled,
     webhookUrl,
+    twilioConfigured,
     isLoading,
     isSaving,
     message,
     handleSave,
     handleReset,
-  } = useAgentSettings();
+  } = useAgentSettings(agentId);
 
   if (isLoading) {
     return (
@@ -145,7 +145,8 @@ export default function AgentSettingsForm() {
         webhookEnabled={webhookEnabled} 
         setWebhookEnabled={setWebhookEnabled} 
         webhookUrl={webhookUrl} 
-        isSaving={isSaving} 
+        isSaving={isSaving}
+        twilioConfigured={twilioConfigured}
       />
 
       <CalendarIntegration agentId={agentId} />

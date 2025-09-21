@@ -1,20 +1,27 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Button } from '../../components/ui/button';
-import { Alert, AlertDescription } from '../../components/ui/alert';
-import { useAgentSettings } from '../../lib/hooks/useAgentSettings';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useAgentSettings } from '@/lib/hooks/useAgentSettings';
 
 const MASK = '********************************';
 
-export default function AgentTwilioSettingsForm() {
-  const { agentId } = useAgentSettings();
-  const [accountSid, setAccountSid] = useState('');
-  const [authToken, setAuthToken] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSaved, setIsSaved] = useState(false);
-  const [error, setError] = useState('');
+export default function AgentTwilioSettingsForm({ agentId }: { agentId: string | null }) {
+  const {
+    twilioAccountSid,
+    setTwilioAccountSid,
+    twilioAuthToken,
+    setTwilioAuthToken,
+    twilioPhoneNumber,
+    setTwilioPhoneNumber,
+    twilioConfigured,
+    isLoading,
+    isSaving,
+    message,
+    handleSaveTwilio,
+  } = useAgentSettings(agentId);
+
   const [showAuthToken, setShowAuthToken] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<null | { ok: boolean; message: string }>(null);
@@ -22,49 +29,9 @@ export default function AgentTwilioSettingsForm() {
   const [isCalling, setIsCalling] = useState(false);
   const [callResult, setCallResult] = useState<null | { ok: boolean; message: string }>(null);
 
-  const configured = useMemo(() => !!(accountSid && phoneNumber && authToken), [accountSid, phoneNumber, authToken]);
-
-  useEffect(() => {
-    if (!agentId) return;
-    (async () => {
-      try {
-        const res = await fetch(`/api/agents/${agentId}/twilio`);
-        if (!res.ok) return;
-        const data = await res.json();
-        setAccountSid(data.accountSid || '');
-        setPhoneNumber(data.phoneNumber || '');
-        setAuthToken(data.authToken || '');
-      } catch (_e) {
-        // noop
-      }
-    })();
-  }, [agentId]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!agentId) return;
-    setIsLoading(true);
-    setError('');
-    setIsSaved(false);
-    try {
-      const res = await fetch(`/api/agents/${agentId}/twilio`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountSid, authToken, phoneNumber }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to save Twilio configuration');
-      }
-      setIsSaved(true);
-      // Mask token after save
-      setAuthToken(MASK);
-      setTimeout(() => setIsSaved(false), 2500);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'An error occurred');
-    } finally {
-      setIsLoading(false);
-    }
+    await handleSaveTwilio();
   };
 
   const handleTest = async () => {
@@ -90,27 +57,25 @@ export default function AgentTwilioSettingsForm() {
   const handleDisconnect = async () => {
     if (!agentId) return;
     if (!confirm('Disconnect Twilio for this agent?')) return;
-    setIsLoading(true);
-    setError('');
-    setIsSaved(false);
+    setIsSaving(true);
+    setMessage(null);
     try {
       const res = await fetch(`/api/agents/${agentId}/twilio`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to disconnect Twilio');
-      setAccountSid('');
-      setAuthToken('');
-      setPhoneNumber('');
-      setIsSaved(true);
-      setTimeout(() => setIsSaved(false), 2500);
+      setTwilioAccountSid('');
+      setTwilioAuthToken('');
+      setTwilioPhoneNumber('');
+      setMessage({ type: 'success', text: 'Twilio disconnected successfully!' });
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'An error occurred');
+      setMessage({ type: 'error', text: e instanceof Error ? e.message : 'An error occurred' });
     } finally {
-      setIsLoading(false);
+      setIsSaving(false);
     }
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      {!configured && (
+      {!twilioConfigured && (
         <Alert className="border-yellow-600">
           <AlertDescription className="text-yellow-500 text-sm">
             This agent does not have Twilio configured yet. Outbound calls may fail until you connect a Twilio account and number.
@@ -125,8 +90,8 @@ export default function AgentTwilioSettingsForm() {
         <input
           type="text"
           id="accountSid"
-          value={accountSid}
-          onChange={(e) => setAccountSid(e.target.value)}
+          value={twilioAccountSid}
+          onChange={(e) => setTwilioAccountSid(e.target.value)}
           placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           className="w-full px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           required
@@ -142,11 +107,11 @@ export default function AgentTwilioSettingsForm() {
           <input
             type={showAuthToken ? 'text' : 'password'}
             id="authToken"
-            value={authToken}
-            onChange={(e) => setAuthToken(e.target.value)}
+            value={twilioAuthToken}
+            onChange={(e) => setTwilioAuthToken(e.target.value)}
             placeholder="********************************"
             className="w-full px-3 py-2 pr-20 border border-gray-700 bg-gray-800 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-            required={!configured}
+            required={!twilioConfigured}
           />
           <Button
             type="button"
@@ -168,8 +133,8 @@ export default function AgentTwilioSettingsForm() {
         <input
           type="tel"
           id="phoneNumber"
-          value={phoneNumber}
-          onChange={(e) => setPhoneNumber(e.target.value)}
+          value={twilioPhoneNumber}
+          onChange={(e) => setTwilioPhoneNumber(e.target.value)}
           placeholder="+1234567890"
           className="w-full px-3 py-2 border border-gray-700 bg-gray-800 text-white rounded-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
           required
@@ -177,15 +142,11 @@ export default function AgentTwilioSettingsForm() {
         <p className="mt-1 text-xs text-gray-500">Must be in E.164 format</p>
       </div>
 
-      {error && (
-        <Alert className="border-red-600">
-          <AlertDescription className="text-red-500 text-sm">{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {isSaved && (
-        <Alert className="border-green-700">
-          <AlertDescription className="text-green-500 text-sm">Twilio configuration saved.</AlertDescription>
+      {message && (
+        <Alert className={message.type === 'success' ? 'border-green-700' : 'border-red-600'}>
+          <AlertDescription className={message.type === 'success' ? 'text-green-500 text-sm' : 'text-red-500 text-sm'}>
+            {message.text}
+          </AlertDescription>
         </Alert>
       )}
 
@@ -201,7 +162,7 @@ export default function AgentTwilioSettingsForm() {
         <Button type="submit" variant="outline" disabled={isLoading}>
           {isLoading ? 'Saving...' : 'Save Configuration'}
         </Button>
-        {(accountSid || phoneNumber) && (
+        {(twilioAccountSid || twilioPhoneNumber) && (
           <Button type="button" variant="outline" onClick={handleDisconnect} disabled={isLoading}>
             Disconnect Twilio
           </Button>
@@ -228,7 +189,7 @@ export default function AgentTwilioSettingsForm() {
           <Button
             type="button"
             variant="outline"
-            disabled={isCalling || !agentId || !phoneNumber}
+            disabled={isCalling || !agentId || !twilioPhoneNumber}
             onClick={async () => {
               setCallResult(null);
               const raw = testPhone.trim();

@@ -10,7 +10,7 @@ export default async function AgentSettingsPage() {
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {
       cookies: {
         getAll() {
@@ -35,6 +35,12 @@ export default async function AgentSettingsPage() {
     redirect('/auth/sign-in');
   }
 
+  const { data: agent } = await supabase
+    .from('agent_configurations')
+    .select('id')
+    .eq('name', 'default')
+    .single();
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -52,7 +58,7 @@ export default async function AgentSettingsPage() {
               <p className="text-sm text-gray-400 mb-4">
                 Connect Twilio specifically for this agent. These settings override any organization-level Twilio configuration.
               </p>
-              <AgentTwilioSettingsForm />
+              <AgentTwilioSettingsForm agentId={agent?.id} />
             </section>
 
             <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
@@ -60,7 +66,7 @@ export default async function AgentSettingsPage() {
               <p className="text-sm text-gray-400 mb-4">
                 Customize how your voice agent responds to callers and handles scheduling requests.
               </p>
-              <AgentSettingsForm  />
+              <AgentSettingsForm agentId={agent?.id} />
             </section>
 
             <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
@@ -68,7 +74,7 @@ export default async function AgentSettingsPage() {
               <p className="text-sm text-gray-400 mb-4">
                 Configure which communication channels your agent can use to respond to inquiries.
               </p>
-              <AgentResponseTypeForm  />
+              <AgentResponseTypeForm agentId={agent?.id} />
             </section>
           </div>
         </div>

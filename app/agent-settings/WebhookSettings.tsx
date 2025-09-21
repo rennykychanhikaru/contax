@@ -11,13 +11,15 @@ interface WebhookSettingsProps {
   setWebhookEnabled: (enabled: boolean) => void;
   webhookUrl: string;
   isSaving: boolean;
+  twilioConfigured: boolean;
 }
 
 export default function WebhookSettings({ 
   webhookEnabled, 
   setWebhookEnabled, 
   webhookUrl, 
-  isSaving 
+  isSaving,
+  twilioConfigured
 }: WebhookSettingsProps) {
   const [copied, setCopied] = useState(false);
 
@@ -34,9 +36,17 @@ export default function WebhookSettings({
           id="webhook-enabled"
           checked={webhookEnabled}
           onCheckedChange={setWebhookEnabled}
-          disabled={isSaving}
+          disabled={isSaving || !twilioConfigured}
         />
       </div>
+
+      {!twilioConfigured && (
+        <div className="p-3 rounded-md border border-yellow-700 bg-yellow-900/20">
+          <p className="text-xs text-yellow-500">
+            Configure Twilio for this agent before enabling webhooks (see Agent Twilio Integration above).
+          </p>
+        </div>
+      )}
 
       {webhookEnabled && webhookUrl && (
         <div className="space-y-2">

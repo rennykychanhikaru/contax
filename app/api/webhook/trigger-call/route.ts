@@ -198,7 +198,7 @@ export async function POST(req: NextRequest) {
     // Try query and headers
     if (!phoneNumber) phoneNumber = phoneFromQuery(req)
     if (!phoneNumber) phoneNumber = phoneFromHeaders(req)
-    const agentId = mapAgentId(body)
+    let agentId = mapAgentId(body)
     const context = mapContext(body)
 
     // Auto-format to E.164 when possible
@@ -229,61 +229,98 @@ export async function POST(req: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY!
     )
 
-    // Agent-first: if agentId provided and agent-level Twilio settings exist, place call directly
-    if (agentId) {
-      try {
-        const { data: agentTwilio } = await supabase
-          .from<AgentTwilioRow>('agent_twilio_settings')
-          .select('organization_id, account_sid, auth_token_encrypted, phone_number')
-          .eq('agent_id', agentId)
+    // If agentId not provided, allow alternative resolution methods to preserve existing webhook flows:
+    // 1) Agent webhook token via header or body
+    // 2) Default agent fallback (name = 'default')
+    if (!agentId) {
+      // Try headers: X-Agent-Token or Bearer token
+      const hdrToken = req.headers.get('x-agent-token') || req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || undefined
+      // Try body: agentToken or webhookToken
+      const bodyObj = body && typeof body === 'object' ? (body as Record<string, unknown>) : undefined
+      const bodyToken = bodyObj?.agentToken as string | undefined || bodyObj?.webhookToken as string | undefined
+      const token = hdrToken || bodyToken
+      if (token) {
+        const { data: agentByToken } = await supabase
+          .from('agent_configurations')
+          .select('id')
+          .eq('webhook_token', token)
           .single()
-        if (agentTwilio) {
-          const orgId = agentTwilio.organization_id
-          const adapter = new TwilioTelephonyAdapter({
-            accountSid: agentTwilio.account_sid,
-            authToken: await decrypt(agentTwilio.auth_token_encrypted),
-            phoneNumber: agentTwilio.phone_number,
-          })
-          const baseUrl = process.env.NEXT_PUBLIC_APP_URL || `https://${req.headers.get('host')}`
-          await adapter.startOutboundCall(phoneNumber, {
-            baseUrl,
-            organizationId: orgId,
-            agentId: String(agentId),
-          })
-          const callSid = adapter.getCurrentCallSid()
-
-          // Log call record in calls table for parity with fallback path
-          const { data: call, error: callError } = await supabase
-            .from('calls')
-            .insert({
-              organization_id: orgId,
-              caller_phone: phoneNumber,
-              status: 'initiated',
-              transcript: context ? { metadata: context } : null
-            })
-            .select()
-            .single()
-          if (callError || !call) {
-            console.error('Failed to create call record (agent-level):', callError)
-            return NextResponse.json({ error: 'Failed to log call' }, { status: 500 })
-          }
-          if (callSid) {
-            try {
-              await supabase
-                .from('calls')
-                .update({ status: 'connecting', call_sid: callSid })
-                .eq('id', call.id)
-            } catch (_e) { /* noop */ }
-          }
-          return NextResponse.json({ success: true, callId: call.id, twilioCallSid: callSid, agentLevel: true })
+        if (agentByToken?.id) {
+          agentId = agentByToken.id as string
         }
-      } catch (e) {
-        // If agent-level lookup fails, continue legacy path below
-        console.error('Agent-level twilio lookup failed:', e)
       }
     }
+    if (!agentId) {
+      // Try default agent
+      const { data: defAgent } = await supabase
+        .from('agent_configurations')
+        .select('id')
+        .eq('name', 'default')
+        .limit(1)
+        .single()
+      if (defAgent?.id) {
+        agentId = defAgent.id as string
+      }
+    }
+    if (!agentId) {
+      return NextResponse.json({ error: 'agentId is required' }, { status: 400 })
+    }
 
-    // Try legacy flow: store a pending call in outgoing_calls
+    try {
+      const { data: agentTwilio, error: agentErr } = await supabase
+        .from<AgentTwilioRow>('agent_twilio_settings')
+        .select('organization_id, account_sid, auth_token_encrypted, phone_number')
+        .eq('agent_id', agentId)
+        .single()
+      if (agentErr || !agentTwilio) {
+        const configureUrl = `${process.env.NEXT_PUBLIC_APP_URL || `https://${req.headers.get('host')}`}/agent-settings`
+        return NextResponse.json({ error: 'Twilio not configured for this agent', configureUrl }, { status: 409 })
+      }
+      const orgId = agentTwilio.organization_id
+      const adapter = new TwilioTelephonyAdapter({
+        accountSid: agentTwilio.account_sid,
+        authToken: await decrypt(agentTwilio.auth_token_encrypted),
+        phoneNumber: agentTwilio.phone_number,
+      })
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || `https://${req.headers.get('host')}`
+      await adapter.startOutboundCall(phoneNumber, {
+        baseUrl,
+        organizationId: orgId,
+        agentId: String(agentId),
+      })
+      const callSid = adapter.getCurrentCallSid()
+
+      // Log into calls table
+      const { data: call, error: callError } = await supabase
+        .from('calls')
+        .insert({
+          organization_id: orgId,
+          agent_id: agentId,
+          caller_phone: phoneNumber,
+          status: 'initiated',
+          transcript: context ? { metadata: context } : null
+        })
+        .select()
+        .single()
+      if (callError || !call) {
+        console.error('Failed to create call record:', callError)
+        return NextResponse.json({ error: 'Failed to log call' }, { status: 500 })
+      }
+      if (callSid) {
+        try {
+          await supabase
+            .from('calls')
+            .update({ status: 'connecting', call_sid: callSid })
+            .eq('id', call.id)
+        } catch { /* noop */ }
+      }
+      return NextResponse.json({ success: true, callId: call.id, twilioCallSid: callSid })
+    } catch (e) {
+      console.error('Agent-level call failed:', e)
+      return NextResponse.json({ error: 'Failed to initiate call' }, { status: 500 })
+    }
+
+    // Legacy path removed; return if we somehow reach here
     let data: { id: string } | null = null
     let ocError: unknown = null
     try {

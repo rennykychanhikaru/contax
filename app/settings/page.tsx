@@ -1,7 +1,6 @@
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { redirect } from 'next/navigation';
-import TwilioIntegrationForm from './TwilioIntegrationForm';
 import CalendarSettings from './CalendarSettings';
 import Header from '../../components/Header';
 import OutgoingCallTrigger from '../../components/OutgoingCallTrigger';
@@ -49,27 +48,7 @@ export default async function SettingsPage() {
           <div className="space-y-6">
             <CalendarSettings userId={user.id} />
 
-            <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
-              <h3 className="text-lg font-semibold mb-4 text-white">Twilio Integration</h3>
-              <p className="text-sm text-gray-400 mb-4">
-                Connect your Twilio account to enable SMS and voice call features for appointment reminders and notifications.
-              </p>
-              <div className="p-3 mb-4 rounded-md border border-yellow-700 bg-yellow-900/20">
-                <p className="text-sm text-yellow-500">
-                  Note: Agent-level Twilio settings override organization-level configuration. Configure per-agent Twilio on the Agent Settings page.
-                </p>
-              </div>
-              
-              <TwilioIntegrationForm userId={user.id} />
-              
-              <div className="mt-8 pt-6 border-t border-gray-700">
-                <h4 className="text-base font-medium mb-3 text-white">Test Outgoing Calls</h4>
-                <p className="text-sm text-gray-400 mb-4">
-                  Test your Twilio integration by making an outgoing call that connects to your voice agent.
-                </p>
-                <OutgoingCallTrigger />
-              </div>
-            </section>
+            {/* Twilio integration moved to per-agent settings. */}
           </div>
         </div>
       </main>

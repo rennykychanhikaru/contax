@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
-import { TwilioTelephonyAdapter } from '../../../../lib/telephony/twilio';
-import { decrypt } from '../../../../lib/security/crypto';
+import { TwilioTelephonyAdapter } from '@/lib/telephony/twilio';
+import { decrypt } from '@/lib/security/crypto';
 
 type AgentTwilioRow = {
   organization_id: string;
@@ -49,52 +49,23 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    // Resolve credentials: agent-first, then org fallback
-    let orgId = organizationId as string | undefined;
-    let accountSid: string | undefined;
-    let authToken: string | undefined;
-    let fromNumber: string | undefined;
-
-    // If agentId provided, try agent-level settings
-    if (agentId) {
-      const { data: agentRow } = await supabase
-        .from<AgentTwilioRow>('agent_twilio_settings')
-        .select('organization_id, account_sid, auth_token_encrypted, phone_number')
-        .eq('agent_id', agentId)
-        .single();
-      if (agentRow) {
-        orgId = orgId || agentRow.organization_id;
-        accountSid = agentRow.account_sid;
-        authToken = await decrypt(agentRow.auth_token_encrypted);
-        fromNumber = agentRow.phone_number;
-      }
+    // Require agentId and resolve agent-level credentials only
+    if (!agentId) {
+      return NextResponse.json({ error: 'agentId is required' }, { status: 400 });
     }
-
-    // If not found or no agentId, resolve org-level
-    if (!accountSid || !authToken || !fromNumber) {
-      if (!orgId && userId) {
-        const { data: member } = await supabase
-          .from<{ organization_id: string }>('organization_members')
-          .select('organization_id')
-          .eq('user_id', userId)
-          .single();
-        if (member) orgId = member.organization_id;
-      }
-      if (!orgId) {
-        return NextResponse.json({ error: 'Organization ID is required' }, { status: 400 });
-      }
-      const { data: twilioSettings, error: settingsError } = await supabase
-        .from<OrgTwilioRow>('twilio_settings')
-        .select('account_sid, auth_token, phone_number')
-        .eq('organization_id', orgId)
-        .single();
-      if (settingsError || !twilioSettings) {
-        return NextResponse.json({ error: 'Twilio settings not found for organization' }, { status: 404 });
-      }
-      accountSid = twilioSettings.account_sid;
-      authToken = twilioSettings.auth_token;
-      fromNumber = twilioSettings.phone_number;
+    const { data: agentRow, error: agentErr } = await supabase
+      .from<AgentTwilioRow>('agent_twilio_settings')
+      .select('organization_id, account_sid, auth_token_encrypted, phone_number')
+      .eq('agent_id', agentId)
+      .single();
+    if (agentErr || !agentRow) {
+      const configureUrl = `${process.env.NEXT_PUBLIC_APP_URL || `https://${req.headers.get('host')}`}/agent-settings`;
+      return NextResponse.json({ error: 'Twilio not configured for this agent', configureUrl }, { status: 409 });
     }
+    const orgId = agentRow.organization_id;
+    const accountSid = agentRow.account_sid;
+    const authToken = await decrypt(agentRow.auth_token_encrypted);
+    const fromNumber = agentRow.phone_number;
 
     // Initialize Twilio adapter
     const twilioAdapter = new TwilioTelephonyAdapter({

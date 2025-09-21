@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 
-// GET - Get the default agent for the user's organization
-export async function GET() {
+// GET - Get the agent for the user's organization
+export async function GET(req: NextRequest, { params }: { params: { agent_id: string } }) {
+  const agentId = params.agent_id;
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -44,12 +45,12 @@ export async function GET() {
       return NextResponse.json({ error: 'No organization found' }, { status: 404 });
     }
 
-    // Get the default agent settings for the organization
+    // Get the agent settings for the organization
     const { data: agent, error } = await supabase
       .from('agent_configurations')
       .select('*')
       .eq('organization_id', member.organization_id)
-      .eq('name', 'default')
+      .eq('id', agentId)
       .single();
 
     if (error || !agent) {
@@ -89,13 +90,14 @@ export async function GET() {
       twilioConfigured
     });
   } catch (error) {
-    console.error('Error fetching default agent:', error);
-    return NextResponse.json({ error: 'Failed to fetch default agent' }, { status: 500 });
+    console.error('Error fetching agent:', error);
+    return NextResponse.json({ error: 'Failed to fetch agent' }, { status: 500 });
   }
 }
 
-// POST - Save or update the default agent settings
-export async function POST(req: NextRequest) {
+// POST - Save or update the agent settings
+export async function POST(req: NextRequest, { params }: { params: { agent_id: string } }) {
+  const agentId = params.agent_id;
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -139,17 +141,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No organization found' }, { status: 404 });
     }
 
-    // First, check if a default agent configuration exists
+    // First, check if a agent configuration exists
     const { data: existingAgent } = await supabase
       .from('agent_configurations')
       .select('*')
       .eq('organization_id', member.organization_id)
-      .eq('name', 'default')
+      .eq('id', agentId)
       .single();
 
     interface AgentData {
       organization_id: string;
-      name: string;
       display_name: string;
       prompt: string;
       greeting: string;
@@ -165,7 +166,6 @@ export async function POST(req: NextRequest) {
 
     const agentData: AgentData = {
       organization_id: member.organization_id,
-      name: 'default',
       display_name: display_name || 'AI Assistant',
       prompt: prompt || 'You are a helpful scheduling assistant.',
       greeting: greeting || 'Hi! Thanks for calling. How can I help you today?',
@@ -260,7 +260,7 @@ export async function POST(req: NextRequest) {
         .from('agent_configurations')
         .update(updateData)
         .eq('organization_id', member.organization_id)
-        .eq('name', 'default')
+        .eq('id', agentId)
         .select()
         .single();
     } else {

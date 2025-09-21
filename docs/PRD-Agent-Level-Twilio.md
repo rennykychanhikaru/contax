@@ -45,8 +45,8 @@ By moving Twilio configuration to the agent level, we will empower our users wit
 *   [x] 1.1: Create a new `agent_twilio_settings` table (agent-scoped). Store Twilio Account SID, encrypted Auth Token, and phone number per agent.
 *   [x] 1.2: Add FKs to `agent_configurations(id)` and `organizations(id)`; enforce `UNIQUE(agent_id)` and consider `UNIQUE(organization_id, phone_number)` to prevent number collisions within an org.
 *   [x] 1.3: Add RLS policies mirroring `organization_members` permissions (read for members, write for admin/owner) and indexes for `agent_id`, `organization_id`, and `phone_number`.
-*   [ ] 1.4: Do NOT drop `twilio_settings` yet. Keep it during migration for fallback and gradual rollout.
-*   [ ] 1.5: Optional backfill: seed the default agent’s settings from `twilio_settings` to accelerate adoption.
+*   [x] 1.4: Decommission org-level table. A migration to drop `twilio_settings` is included; apply when ready.
+*   [ ] 1.5: Optional backfill (skipped given single-user environment).
 
 **Pseudocode (SQL):**
 
@@ -112,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_twilio_phone ON public.agent_twilio_setting
     - Validate inputs (Account SID, E.164 phone number), mask token on GET, and encrypt token at rest.
     - Enforce permissions via RLS and server-side checks (org membership and admin/owner role for write).
 *   [x] 2.2: Implement at-rest encryption for the `auth_token_encrypted` field using AES‑256‑GCM (`lib/security/crypto.encrypt`), and store `encryption_version`.
-*   [x] 2.3: Update outbound call routes to be agent-first with org-level fallback.
+*   [x] 2.3: Update outbound call routes to require `agentId` and use agent-level credentials only (no org fallback).
     - Resolve credentials in the route (not inside the adapter) by `agentId` → `agent_twilio_settings`, else fallback to `twilio_settings` (feature-flagged during migration).
     - Persist `call_sid`, `agent_id`, and `organization_id` when initiating calls to enable status mapping.
 
@@ -122,9 +122,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_twilio_phone ON public.agent_twilio_setting
 
 **Sub-milestones:**
 
-*   [x] 3.1: Create a new `AgentTwilioSettingsForm` component (agent-scoped), modeled on `TwilioIntegrationForm`, with masked token behavior and clear validation states.
+*   [x] 3.1: Create a new `AgentTwilioSettingsForm` component (agent-scoped), with masked token behavior and clear validation states.
 *   [x] 3.2: Integrate `AgentTwilioSettingsForm` into `app/agent-settings/page.tsx`; show a notice if the agent lacks configuration.
-*   [x] 3.3: Keep the org-level `TwilioIntegrationForm` temporarily with a banner indicating: “Agent-level Twilio overrides org-level during migration.” Remove later.
+*   [x] 3.3: Remove org-level Twilio UI and API.
+*   [x] 3.4: Add “Test Connection” and “Place Test Call” actions to the agent UI.
 
 **Pseudocode (React):**
 
@@ -164,7 +165,7 @@ export default function AgentTwilioSettingsForm({ agentId }: { agentId: string }
 *   [ ] 4.1: Unit tests: agent-level API CRUD, masking logic, permission paths, encryption/decryption roundtrip.
 *   [ ] 4.2: Integration tests: outbound call flow (agent-first), org-fallback behavior, status webhook updates tied to `call_sid` + `agent_id`.
 *   [ ] 4.3: E2E/UI tests: AgentTwilioSettingsForm create/update/delete and call gating.
-*   [ ] 4.4: Staged deployment with feature flag to enable/disable org-level fallback.
+*   [ ] 4.4: Staged deployment (org-level fallback removed; no flag needed in single-user scenario).
 *   [ ] 4.5: Observability: emit metrics for agent-level call initiation and fallback usage; audit logs on config changes (redacted).
 
 ## 6. Rollback Plan

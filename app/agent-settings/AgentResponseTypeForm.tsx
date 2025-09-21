@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Label } from '../../components/ui/label';
-import { Switch } from '../../components/ui/switch';
-import { Button } from '../../components/ui/button';
-import { Alert, AlertDescription } from '../../components/ui/alert';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Loader2, Save } from 'lucide-react';
 
-export default function AgentResponseTypeForm() {
+export default function AgentResponseTypeForm({ agentId }: { agentId: string | null }) {
   const [phoneCallEnabled, setPhoneCallEnabled] = useState(true);
   const [emailEnabled, setEmailEnabled] = useState(false);
   const [smsEnabled, setSmsEnabled] = useState(false);
@@ -16,11 +16,12 @@ export default function AgentResponseTypeForm() {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   useEffect(() => {
+    if (!agentId) return;
     // Fetch existing agent settings
     const fetchSettings = async () => {
       setIsLoading(true);
       try {
-        const response = await fetch('/api/agents/default');
+        const response = await fetch(`/api/agents/${agentId}`);
         if (response.ok) {
           const data = await response.json();
           if (data.agent) {
@@ -37,14 +38,15 @@ export default function AgentResponseTypeForm() {
     };
 
     fetchSettings();
-  }, []);
+  }, [agentId]);
 
   const handleSave = async () => {
+    if (!agentId) return;
     setIsSaving(true);
     setMessage(null);
 
     try {
-      const response = await fetch('/api/agents/default', {
+      const response = await fetch(`/api/agents/${agentId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
