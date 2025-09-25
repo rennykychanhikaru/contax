@@ -180,6 +180,38 @@ export async function createCalendarEvent(
   }
 }
 
+// Minimal service account helper used by API routes that fall back to
+// server-to-server Google Calendar access. Reads credentials from env.
+export type ServiceAccount = { client_email: string; private_key: string };
+
+export function getServiceAccount(): ServiceAccount {
+  // Prefer a single JSON blob env var
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_SERVICE_ACCOUNT;
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw as string);
+      if (parsed?.client_email && parsed?.private_key) {
+        return {
+          client_email: String(parsed.client_email),
+          private_key: String(parsed.private_key)
+        };
+      }
+    } catch {
+      // Ignore JSON parse errors; fall back to individual env vars
+    }
+  }
+
+  // Fallback to separate env vars
+  const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || '';
+  // Private key often has literal \n in env; normalize to real newlines
+  const privateKey = (process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+
+  if (!clientEmail || !privateKey) {
+    throw new Error('Google service account not configured');
+  }
+  return { client_email: clientEmail, private_key: privateKey };
+}
+
 function normalizeRfc3339(input: string, timeZone?: string): string {
   if (!input) return input;
   let s = input.trim();
