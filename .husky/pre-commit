@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Pre-commit checks: lint staged files and typecheck
+npx --no-install lint-staged
+npm run -s typecheck
