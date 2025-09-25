@@ -146,7 +146,7 @@ wss.on('connection', (ws) => {
             voice: v || 'sage',
             modalities: ['audio', 'text'],
             // Output μ-law 8k directly from Realtime for reliable pacing
-            output_audio_format: 'g711_ulaw',
+            output_audio_format: 'pcm16',
             input_audio_format: 'g711_ulaw',
             // Enable automatic speech turns (use default server VAD timing)
             turn_detection: { type: 'server_vad' },
@@ -216,14 +216,18 @@ wss.on('connection', (ws) => {
               }
             }
           }
-          // Handle audio deltas: forward μ-law frames directly (20ms @ 8kHz)
+          // Handle audio deltas: downsample, encode, and forward
           if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
+            console.time('audio_processing');
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
-            const mu = Buffer.from(b64, 'base64')
+            const pcm24k = new Int16Array(Buffer.from(b64, 'base64').buffer)
+            const pcm8k = downsample24kTo8kLinear(pcm24k)
+            const mu = encodePcm16ToMuLaw(pcm8k)
             for (let i = 0; i < mu.length; i += 160) {
               enqueueMu(mu.subarray(i, i + 160))
             }
+            console.timeEnd('audio_processing');
           }
           // Mark greeting as complete on first completed response
           if (!greetingDone && (msg?.type === 'response.completed' || msg?.type === 'response.audio.done' || msg?.type === 'response.done')) {
@@ -388,6 +392,15 @@ function encodePcm16ToMuLaw(pcm) {
   const out = new Uint8Array(pcm.length)
   for (let i = 0; i < pcm.length; i++) out[i] = pcm16ToMu(pcm[i])
   return out
+}
+
+// Downsample PCM16 from 24kHz to 8kHz by averaging 3 samples
+function downsample24kTo8kLinear(pcm24k) {
+  const out = new Int16Array(Math.floor(pcm24k.length / 3));
+  for (let i = 0, j = 0; j < out.length; i += 3, j++) {
+    out[j] = ((pcm24k[i] + pcm24k[i+1] + pcm24k[i+2]) / 3) | 0;
+  }
+  return out;
 }
 
 async function invokeToolAndRespond(rws, callId, name, argsJson, ctx) {
