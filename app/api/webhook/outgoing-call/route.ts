@@ -1,6 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
+// No SSR Supabase needed here; we use admin client for RLS-safe ops
+import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
 import { TwilioTelephonyAdapter } from '@/lib/telephony/twilio';
 import { decrypt } from '@/lib/security/crypto';
 
@@ -22,34 +23,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Phone number is required' }, { status: 400 });
     }
 
-    // Initialize Supabase client
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
+    // Initialize admin client (RLS-bypass for controlled reads/writes)
+
+    // Admin client to bypass RLS for reads/writes we control
+    const admin = createSupabaseAdmin(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options);
-              });
-            } catch (error) {
-              // Handle error
-            }
-          },
-        },
-      }
+      { auth: { persistSession: false } }
     );
 
     // Require agentId and resolve agent-level credentials only
     if (!agentId) {
       return NextResponse.json({ error: 'agentId is required' }, { status: 400 });
     }
-    const { data: agentRow, error: agentErr } = await supabase
+    const { data: agentRow, error: agentErr } = await admin
       .from<AgentTwilioRow>('agent_twilio_settings')
       .select('organization_id, account_sid, auth_token_encrypted, phone_number')
       .eq('agent_id', agentId)
@@ -88,7 +75,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Log the call in the database
-    await supabase
+    await admin
       .from('call_logs')
       .insert({
         organization_id: orgId,
