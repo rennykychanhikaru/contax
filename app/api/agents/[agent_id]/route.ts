@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
+import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
 
 // GET - Get the agent for the user's organization
 export async function GET(req: NextRequest, { params }: { params: { agent_id: string } }) {
@@ -71,10 +72,15 @@ export async function GET(req: NextRequest, { params }: { params: { agent_id: st
       }
     }
 
-    // Determine if Twilio is configured for this agent
+    // Determine if Twilio is configured for this agent (use admin to avoid RLS hiding rows)
     let twilioConfigured = false;
     try {
-      const { data: tw } = await supabase
+      const admin = createSupabaseAdmin(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { auth: { persistSession: false } }
+      );
+      const { data: tw } = await admin
         .from('agent_twilio_settings')
         .select('id')
         .eq('agent_id', agent.id)
@@ -181,7 +187,12 @@ export async function POST(req: NextRequest, { params }: { params: { agent_id: s
     if (webhook_enabled) {
       const agentIdForCheck = existingAgent?.id;
       if (agentIdForCheck) {
-        const { data: tw } = await supabase
+        const admin = createSupabaseAdmin(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+          { auth: { persistSession: false } }
+        );
+        const { data: tw } = await admin
           .from('agent_twilio_settings')
           .select('id')
           .eq('agent_id', agentIdForCheck)
