@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 
 export async function POST(request: NextRequest) {
@@ -10,27 +8,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Organization name is required' }, { status: 400 });
   }
 
-  const cookieStore = await cookies();
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) => {
-              cookieStore.set(name, value, options);
-            });
-          } catch (error) {
-            console.error('Error setting cookies:', error);
-          }
-        },
-      },
-    }
-  );
+  // Admin client for trusted server-side writes (service role)
+  const adminKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  if (!adminKey) {
+    return NextResponse.json({ error: 'Server missing SUPABASE_SERVICE_ROLE_KEY' }, { status: 500 });
+  }
+  const admin = createClient(supabaseUrl, adminKey);
 
   // Get authenticated user (from Authorization header access token)
   const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
@@ -38,10 +22,7 @@ export async function POST(request: NextRequest) {
     ? authHeader.slice('Bearer '.length)
     : undefined;
 
-  const supabaseAnon = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const supabaseAnon = createClient(supabaseUrl, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
   let userId: string | null = null;
   if (token) {
     const userResp = await supabaseAnon.auth.getUser(token);
@@ -54,7 +35,7 @@ export async function POST(request: NextRequest) {
 
   try {
     // Check if user already has an organization
-    const { data: existingMembership } = await supabase
+    const { data: existingMembership } = await admin
       .from('organization_members')
       .select('organization_id')
       .eq('user_id', userId)
@@ -65,7 +46,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Create organization
-    const { data: org, error: orgError } = await supabase
+    const { data: org, error: orgError } = await admin
       .from('organizations')
       .insert({
         name: organizationName.trim(),
@@ -94,7 +75,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Add user as owner
-    const { error: memberError } = await supabase
+    const { error: memberError } = await admin
       .from('organization_members')
       .insert({
         organization_id: org.id,
@@ -108,7 +89,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Mark user as onboarded
-    await supabase
+    await admin
       .from('users')
       .update({ onboarded: true })
       .eq('id', userId);
