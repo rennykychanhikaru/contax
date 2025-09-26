@@ -103,105 +103,106 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ age
 
 // POST /api/agents/[agent_id]/twilio
 export async function POST(req: NextRequest, { params }: { params: Promise<{ agent_id: string }> }) {
-  // Preflight: ensure encryption key is present and properly formatted so we fail fast with a 400
-  if (process.env.NODE_ENV === 'production') {
-    const key = process.env.WEBHOOK_ENCRYPTION_KEY;
-    if (!isValidHex64(key)) {
-      return NextResponse.json({ error: 'Invalid server configuration: WEBHOOK_ENCRYPTION_KEY must be 64 hex characters' }, { status: 400 });
-    }
-  }
-
-  const { supabase, user } = await getSupabaseWithUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  const { agent_id } = await params;
-  const agent = await requireAgentAndOrg(supabase, agent_id);
-  if (!agent) return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
-
-  const canWrite = await requireOrgRole(supabase, agent.organization_id, user.id, ['owner', 'admin']);
-  if (!canWrite) return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
-
-  let parsed: unknown = {};
-  try { parsed = await req.json(); } catch (_err) { /* noop */ }
-  const {
-    accountSid,
-    authToken,
-    phoneNumber,
-  } = (parsed as Partial<{ accountSid: string; authToken: string; phoneNumber: string }>);
-
-  if (!accountSid || !phoneNumber) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-  }
-  if (!String(accountSid).startsWith('AC') || String(accountSid).length !== 34) {
-    return NextResponse.json({ error: 'Invalid Account SID format' }, { status: 400 });
-  }
-  if (!String(phoneNumber).startsWith('+')) {
-    return NextResponse.json({ error: 'Phone number must be E.164 (e.g., +1234567890)' }, { status: 400 });
-  }
-
-  // Check if existing
-  const { data: existing } = await supabase
-    .from<{ id: string }>('agent_twilio_settings')
-    .select('id')
-    .eq('agent_id', agent.id)
-    .single();
-
-  let result;
-  if (existing) {
-    const update: Record<string, unknown> = {
-      account_sid: accountSid,
-      phone_number: phoneNumber,
-      updated_at: new Date().toISOString(),
-    };
-    if (authToken && authToken !== MASK) {
-      update.auth_token_encrypted = await encrypt(String(authToken));
-    }
-    result = await supabase
-      .from('agent_twilio_settings')
-      .update(update)
-      .eq('agent_id', agent.id);
-  } else {
-    if (!authToken || authToken === MASK) {
-      return NextResponse.json({ error: 'Auth token is required for initial setup' }, { status: 400 });
-    }
-    result = await supabase
-      .from('agent_twilio_settings')
-      .insert({
-        organization_id: agent.organization_id,
-        agent_id: agent.id,
-        account_sid: accountSid,
-        auth_token_encrypted: await encrypt(String(authToken)),
-        phone_number: phoneNumber,
-      });
-  }
-
-  if (result.error) {
-    // Surface useful DB errors (e.g., unique violation on (organization_id, phone_number))
-    const code = (result.error as { code?: string }).code;
-    const msg = (result.error as { message?: string }).message || 'Failed to save Twilio settings';
-    if (code === '23505') {
-      return NextResponse.json({ error: 'Phone number already in use in this organization' }, { status: 409 });
-    }
-    return NextResponse.json({ error: 'Supabase error', code, message: msg }, { status: 500 });
-  }
-
-  // Audit log (redacted)
   try {
-    await supabase.from('audit_logs').insert({
-      organization_id: agent.organization_id,
-      user_id: user.id,
-      action: existing ? 'update' : 'create',
-      resource_type: 'agent_twilio_settings',
-      resource_id: agent.id,
-      changes: {
+    // Preflight: ensure encryption key is present and properly formatted so we fail fast with a 400
+    if (process.env.NODE_ENV === 'production') {
+      const key = process.env.WEBHOOK_ENCRYPTION_KEY;
+      if (!isValidHex64(key)) {
+        return NextResponse.json({ error: 'Invalid server configuration: WEBHOOK_ENCRYPTION_KEY must be 64 hex characters' }, { status: 400 });
+      }
+    }
+
+    const { supabase, user } = await getSupabaseWithUser();
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+    const { agent_id } = await params;
+    const agent = await requireAgentAndOrg(supabase, agent_id);
+    if (!agent) return NextResponse.json({ error: 'Agent not found' }, { status: 404 });
+
+    const canWrite = await requireOrgRole(supabase, agent.organization_id, user.id, ['owner', 'admin']);
+    if (!canWrite) return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
+
+    let parsed: unknown = {};
+    try { parsed = await req.json(); } catch (_err) { /* noop */ }
+    const { accountSid, authToken, phoneNumber } = (parsed as Partial<{ accountSid: string; authToken: string; phoneNumber: string }>);
+
+    if (!accountSid || !phoneNumber) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+    if (!String(accountSid).startsWith('AC') || String(accountSid).length !== 34) {
+      return NextResponse.json({ error: 'Invalid Account SID format' }, { status: 400 });
+    }
+    if (!String(phoneNumber).startsWith('+')) {
+      return NextResponse.json({ error: 'Phone number must be E.164 (e.g., +1234567890)' }, { status: 400 });
+    }
+
+    // Check if existing
+    const { data: existing } = await supabase
+      .from<{ id: string }>('agent_twilio_settings')
+      .select('id')
+      .eq('agent_id', agent.id)
+      .single();
+
+    let result;
+    if (existing) {
+      const update: Record<string, unknown> = {
         account_sid: accountSid,
         phone_number: phoneNumber,
-        auth_token_updated: !!(authToken && authToken !== MASK),
-      },
-    });
-  } catch (_e) { /* noop */ }
+        updated_at: new Date().toISOString(),
+      };
+      if (authToken && authToken !== MASK) {
+        update.auth_token_encrypted = await encrypt(String(authToken));
+      }
+      result = await supabase
+        .from('agent_twilio_settings')
+        .update(update)
+        .eq('agent_id', agent.id);
+    } else {
+      if (!authToken || authToken === MASK) {
+        return NextResponse.json({ error: 'Auth token is required for initial setup' }, { status: 400 });
+      }
+      result = await supabase
+        .from('agent_twilio_settings')
+        .insert({
+          organization_id: agent.organization_id,
+          agent_id: agent.id,
+          account_sid: accountSid,
+          auth_token_encrypted: await encrypt(String(authToken)),
+          phone_number: phoneNumber,
+        });
+    }
 
-  return NextResponse.json({ success: true });
+    if (result.error) {
+      const code = (result.error as { code?: string }).code;
+      const msg = (result.error as { message?: string }).message || 'Failed to save Twilio settings';
+      if (code === '23505') {
+        return NextResponse.json({ error: 'Phone number already in use in this organization' }, { status: 409 });
+      }
+      return NextResponse.json({ error: 'Supabase error', code, message: msg }, { status: 500 });
+    }
+
+    // Audit log (redacted)
+    try {
+      await supabase.from('audit_logs').insert({
+        organization_id: agent.organization_id,
+        user_id: user.id,
+        action: existing ? 'update' : 'create',
+        resource_type: 'agent_twilio_settings',
+        resource_id: agent.id,
+        changes: {
+          account_sid: accountSid,
+          phone_number: phoneNumber,
+          auth_token_updated: !!(authToken && authToken !== MASK),
+        },
+      });
+    } catch (_e) { /* noop */ }
+
+    return NextResponse.json({ success: true });
+  } catch (e: unknown) {
+    const err = e as { message?: string; stack?: string } | undefined;
+    console.error('POST /api/agents/[agent_id]/twilio error:', err?.message);
+    return NextResponse.json({ error: 'internal_error', message: err?.message || 'unknown' }, { status: 500 });
+  }
 }
 
 // DELETE /api/agents/[agent_id]/twilio
