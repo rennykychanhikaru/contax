@@ -63,6 +63,11 @@ async function requireOrgRole(
   return roles.includes(member.role);
 }
 
+function isValidHex64(s: string | undefined | null) {
+  if (!s) return false;
+  return /^[0-9a-fA-F]{64}$/.test(s);
+}
+
 // GET /api/agents/[agent_id]/twilio
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ agent_id: string }> }) {
   const { supabase, user } = await getSupabaseWithUser();
@@ -98,6 +103,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ age
 
 // POST /api/agents/[agent_id]/twilio
 export async function POST(req: NextRequest, { params }: { params: Promise<{ agent_id: string }> }) {
+  // Preflight: ensure encryption key is present and properly formatted so we fail fast with a 400
+  if (process.env.NODE_ENV === 'production') {
+    const key = process.env.WEBHOOK_ENCRYPTION_KEY;
+    if (!isValidHex64(key)) {
+      return NextResponse.json({ error: 'Invalid server configuration: WEBHOOK_ENCRYPTION_KEY must be 64 hex characters' }, { status: 400 });
+    }
+  }
+
   const { supabase, user } = await getSupabaseWithUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -163,7 +176,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
   }
 
   if (result.error) {
-    return NextResponse.json({ error: 'Failed to save Twilio settings' }, { status: 500 });
+    // Surface useful DB errors (e.g., unique violation on (organization_id, phone_number))
+    const code = (result.error as { code?: string }).code;
+    const msg = (result.error as { message?: string }).message || 'Failed to save Twilio settings';
+    if (code === '23505') {
+      return NextResponse.json({ error: 'Phone number already in use in this organization' }, { status: 409 });
+    }
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 
   // Audit log (redacted)
