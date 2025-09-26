@@ -182,7 +182,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
     if (code === '23505') {
       return NextResponse.json({ error: 'Phone number already in use in this organization' }, { status: 409 });
     }
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: 'Supabase error', code, message: msg }, { status: 500 });
   }
 
   // Audit log (redacted)
