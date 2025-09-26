@@ -93,10 +93,23 @@ export function useAgentSettings(agentId: string | null) {
         });
 
       if (response.ok) {
+        // Reflect server-calculated values immediately (e.g., webhook_url after token generation)
+        type SaveAgentResponse = { agent?: { webhook_enabled?: boolean; webhook_url?: string } };
+        let data: SaveAgentResponse | null = null;
+        try { data = (await response.json()) as SaveAgentResponse; } catch { /* ignore */ }
+        const agent = data?.agent;
+        if (agent) {
+          setWebhookEnabled(!!agent.webhook_enabled);
+          setWebhookUrl(agent.webhook_url || '');
+        }
         setMessage({ type: 'success', text: 'Agent settings saved successfully!' });
       } else {
-        const error = await response.json();
-        setMessage({ type: 'error', text: error.message || 'Failed to save agent settings' });
+        let errorText = 'Failed to save agent settings';
+        try {
+          const error = await response.json();
+          errorText = error.message || error.error || errorText;
+        } catch { /* ignore */ }
+        setMessage({ type: 'error', text: errorText });
       }
     } catch (error) {
       console.error('Error saving agent settings:', error);
