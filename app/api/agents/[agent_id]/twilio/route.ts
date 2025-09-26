@@ -80,8 +80,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ age
 
   const canRead = await requireOrgRole(supabase, agent.organization_id, user.id, []);
   if (!canRead) return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
+  // Use admin client to avoid RLS hiding rows after auth check
+  const admin = createSupabaseAdmin(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false } }
+  );
 
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from<{ account_sid: string; phone_number: string }>('agent_twilio_settings')
     .select('account_sid, phone_number')
     .eq('agent_id', agent.id)
@@ -225,7 +231,13 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   const canWrite = await requireOrgRole(supabase, agent.organization_id, user.id, ['owner', 'admin']);
   if (!canWrite) return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
 
-  const { error } = await supabase
+  const admin = createSupabaseAdmin(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { auth: { persistSession: false } }
+  );
+
+  const { error } = await admin
     .from('agent_twilio_settings')
     .delete()
     .eq('agent_id', agent.id);
@@ -234,7 +246,7 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
 
   // Audit log
   try {
-    await supabase.from('audit_logs').insert({
+    await admin.from('audit_logs').insert({
       organization_id: agent.organization_id,
       user_id: user.id,
       action: 'delete',
