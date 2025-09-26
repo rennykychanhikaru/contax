@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextRequest, NextResponse } from 'next/server';
 // No SSR Supabase needed here; we use admin client for RLS-safe ops
-import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
+import { getAdminClient } from '@/lib/db/admin';
 import { TwilioTelephonyAdapter } from '@/lib/telephony/twilio';
 import { decrypt } from '@/lib/security/crypto';
 
@@ -26,11 +26,7 @@ export async function POST(req: NextRequest) {
     // Initialize admin client (RLS-bypass for controlled reads/writes)
 
     // Admin client to bypass RLS for reads/writes we control
-    const admin = createSupabaseAdmin(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { persistSession: false } }
-    );
+    const admin = getAdminClient();
 
     // Require agentId and resolve agent-level credentials only
     if (!agentId) {

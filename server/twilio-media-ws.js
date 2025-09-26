@@ -106,6 +106,21 @@ if (!OAI_KEY) {
   console.warn('[warn] OPENAI_API_KEY not set; OpenAI TTS greeting will be skipped')
 }
 
+// One-time env validation to aid diagnostics
+;(function validateEnvOnce() {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+  const issues = []
+  if (!SUPABASE_URL) issues.push('NEXT_PUBLIC_SUPABASE_URL')
+  if (!SUPABASE_KEY) issues.push('SUPABASE_SERVICE_ROLE_KEY')
+  if (!OAI_KEY) issues.push('OPENAI_API_KEY')
+  if (!baseUrl) issues.push('NEXT_PUBLIC_APP_URL')
+  if (issues.length) {
+    console.warn('[env.check] missing:', issues.join(', '))
+  } else {
+    console.log('[env.check] all required env present')
+  }
+})()
+
 wss.on('connection', (ws) => {
   let streamSid = ''
   let callSid = ''

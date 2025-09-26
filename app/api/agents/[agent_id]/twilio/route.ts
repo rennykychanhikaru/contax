@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
-import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
+import { getAdminClient } from '@/lib/db/admin';
 import { encrypt } from '@/lib/security/crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -81,11 +81,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ age
   const canRead = await requireOrgRole(supabase, agent.organization_id, user.id, []);
   if (!canRead) return NextResponse.json({ error: 'Permission denied' }, { status: 403 });
   // Use admin client to avoid RLS hiding rows after auth check
-  const admin = createSupabaseAdmin(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
-  );
+  const admin = getAdminClient();
 
   const { data, error } = await admin
     .from<{ account_sid: string; phone_number: string }>('agent_twilio_settings')
@@ -144,47 +140,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
     }
 
     // Admin client to bypass RLS for writes (we already validated org role)
-    const admin = createSupabaseAdmin(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { persistSession: false } }
-    );
+    const admin = getAdminClient();
 
-    // Check if existing (use admin to avoid RLS edge cases)
+    // Upsert by agent_id (idempotent write). Only overwrite token if provided.
+    // Determine if a row exists once (used for audit action only).
     const { data: existing } = await admin
       .from<{ id: string }>('agent_twilio_settings')
       .select('id')
       .eq('agent_id', agent.id)
       .single();
 
-    let result;
-    if (existing) {
-      const update: Record<string, unknown> = {
-        account_sid: accountSid,
-        phone_number: phoneNumber,
-        updated_at: new Date().toISOString(),
-      };
-      if (authToken && authToken !== MASK) {
-        update.auth_token_encrypted = await encrypt(String(authToken));
-      }
-      result = await admin
-        .from('agent_twilio_settings')
-        .update(update)
-        .eq('agent_id', agent.id);
-    } else {
+    const baseRow: Record<string, unknown> = {
+      organization_id: agent.organization_id,
+      agent_id: agent.id,
+      account_sid: accountSid,
+      phone_number: phoneNumber,
+      updated_at: new Date().toISOString(),
+    };
+    if (!existing) {
+      // For initial insert, token is required
       if (!authToken || authToken === MASK) {
         return NextResponse.json({ error: 'Auth token is required for initial setup' }, { status: 400 });
       }
-      result = await admin
-        .from('agent_twilio_settings')
-        .insert({
-          organization_id: agent.organization_id,
-          agent_id: agent.id,
-          account_sid: accountSid,
-          auth_token_encrypted: await encrypt(String(authToken)),
-          phone_number: phoneNumber,
-        });
+      baseRow.auth_token_encrypted = await encrypt(String(authToken));
+    } else if (authToken && authToken !== MASK) {
+      // For updates, only overwrite token if a new one was provided
+      baseRow.auth_token_encrypted = await encrypt(String(authToken));
     }
+
+    const result = await admin
+      .from('agent_twilio_settings')
+      .upsert(baseRow, { onConflict: 'agent_id' });
 
     if (result.error) {
       const code = (result.error as { code?: string }).code;

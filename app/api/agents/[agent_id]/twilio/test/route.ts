@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
-import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
+import { getAdminClient } from '@/lib/db/admin';
 import { decrypt } from '@/lib/security/crypto';
 import twilio from 'twilio';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -64,11 +64,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ ag
     if (!canWrite) return NextResponse.json({ ok: false, error: 'Permission denied' }, { status: 403 });
 
     // Use admin client to bypass RLS for reading settings
-    const admin = createSupabaseAdmin(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY!,
-      { auth: { persistSession: false } }
-    );
+    const admin = getAdminClient();
 
     // Load saved settings
     const { data: settings } = await admin
