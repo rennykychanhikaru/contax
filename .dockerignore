@@ -1,0 +1,63 @@
+# flyctl launch added from .gitignore
+# See http://help.github.com/ignore-files/ for more about ignoring files.
+
+# compiled output
+**/dist
+**/tmp
+out-tsc
+**/.next
+**/*.next
+
+# dependencies
+**/node_modules
+**/.npm-cache
+
+# IDEs and editors
+.idea
+**/.project
+**/.classpath
+**/.c9
+**/*.launch
+**/.settings
+**/*.sublime-workspace
+
+# IDE - VSCode
+**/.vscode/*
+!**/.vscode/settings.json
+!**/.vscode/tasks.json
+!**/.vscode/launch.json
+!**/.vscode/extensions.json
+
+# misc
+.sass-cache
+connect.lock
+coverage
+libpeerconnection.log
+**/npm-debug.log
+**/yarn-error.log
+**/testem.log
+typings
+
+# System Files
+**/.DS_Store
+**/Thumbs.db
+
+**/.nx/cache
+**/pnpm-lock.yaml
+
+# Environment variables - SECURITY: Never commit real credentials
+**/.env.local
+**/.env.production
+**/.env*.local
+**/apps/**/.env.local
+**/apps/**/.env.production
+
+# flyctl launch added from .husky/_/.gitignore
+.husky/_/**/*
+
+# flyctl launch added from supabase/.gitignore
+# Supabase
+supabase/**/.branches
+supabase/**/.temp
+supabase/**/.env
+fly.toml

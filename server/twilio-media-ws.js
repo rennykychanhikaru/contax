@@ -18,7 +18,6 @@ const http = require('http')
 const fs = require('fs')
 const path = require('path')
 const WebSocket = require('ws')
-const { createClient } = require('@supabase/supabase-js')
 
 // --- Load env from .env.local then .env if not already set (Next.js dev style) ---
 function loadDotEnvIfPresent(file) {
@@ -66,13 +65,41 @@ const wss = new WebSocket.Server({ server, perMessageDeflate: false })
 // Ensure TCP_NODELAY (no Nagle) on incoming sockets
 server.on('connection', (sock) => { try { sock.setNoDelay(true) } catch (e) { /* ignore */ } })
 
-// Supabase admin client
+// Basic health endpoint for Fly checks
+server.on('request', (req, res) => {
+  try {
+    const url = req.url || '/'
+    if (req.method === 'GET' && (url === '/health' || url.startsWith('/health?'))) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ status: 'ok' }))
+      return
+    }
+    // Optionally return 200 on root for quick sanity checks
+    if (req.method === 'GET' && (url === '/' || url.startsWith('/?'))) {
+      res.writeHead(200, { 'Content-Type': 'text/plain' })
+      res.end('twilio-ws: ok')
+      return
+    }
+  } catch (_) { /* noop */ }
+})
+
+// Supabase admin client (lazy ESM import to avoid CJS require errors)
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('[fatal] Missing Supabase env (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)')
+let supabase = null
+async function getSupabase() {
+  if (supabase) return supabase
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.warn('[warn] Missing Supabase env (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)')
+  }
+  try {
+    const mod = await import('@supabase/supabase-js')
+    supabase = mod.createClient(SUPABASE_URL, SUPABASE_KEY)
+  } catch (e) {
+    console.error('[fatal] Failed to load @supabase/supabase-js:', e?.message)
+  }
+  return supabase
 }
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 const OAI_KEY = process.env.OPENAI_API_KEY
 if (!OAI_KEY) {
@@ -275,15 +302,20 @@ wss.on('connection', (ws) => {
         if (orgId) {
           let agent
           if (agentId && agentId !== 'default') {
-            const { data } = await supabase
+            const s = await getSupabase()
+            if (s) {
+            const { data } = await s
               .from('agent_configurations')
               .select('id, display_name, greeting, language, prompt, voice')
               .eq('organization_id', orgId)
               .eq('id', agentId)
               .single()
             agent = data
+            }
           } else {
-            const { data } = await supabase
+            const s = await getSupabase()
+            if (s) {
+            const { data } = await s
               .from('agent_configurations')
               .select('id, display_name, greeting, language, prompt, voice')
               .eq('organization_id', orgId)
@@ -291,6 +323,7 @@ wss.on('connection', (ws) => {
               .single()
             agent = data
             if (agent && agent.id) agentId = agent.id // resolve real agent id for this call
+            }
           }
           if (agent) {
             if (agent.greeting) greeting = agent.greeting
@@ -344,9 +377,8 @@ wss.on('connection', (ws) => {
   })
 })
 
-server.listen(PORT, () => {
-  console.log(`[twilio-ws] listening on ws://localhost:${PORT}`)
-  console.log('[twilio-ws] expose this port with ngrok: ngrok http', PORT)
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[twilio-ws] listening on 0.0.0.0:${PORT}`)
 })
 
 // --- Tool invocation helpers ---
