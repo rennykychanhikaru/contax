@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
+import { createClient as createSupabaseAdmin } from '@supabase/supabase-js';
 import { encrypt } from '@/lib/security/crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -136,8 +137,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
       return NextResponse.json({ error: 'Phone number must be E.164 (e.g., +1234567890)' }, { status: 400 });
     }
 
-    // Check if existing
-    const { data: existing } = await supabase
+    // Admin client to bypass RLS for writes (we already validated org role)
+    const admin = createSupabaseAdmin(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      { auth: { persistSession: false } }
+    );
+
+    // Check if existing (use admin to avoid RLS edge cases)
+    const { data: existing } = await admin
       .from<{ id: string }>('agent_twilio_settings')
       .select('id')
       .eq('agent_id', agent.id)
@@ -153,7 +161,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
       if (authToken && authToken !== MASK) {
         update.auth_token_encrypted = await encrypt(String(authToken));
       }
-      result = await supabase
+      result = await admin
         .from('agent_twilio_settings')
         .update(update)
         .eq('agent_id', agent.id);
@@ -161,7 +169,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
       if (!authToken || authToken === MASK) {
         return NextResponse.json({ error: 'Auth token is required for initial setup' }, { status: 400 });
       }
-      result = await supabase
+      result = await admin
         .from('agent_twilio_settings')
         .insert({
           organization_id: agent.organization_id,
@@ -183,7 +191,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
 
     // Audit log (redacted)
     try {
-      await supabase.from('audit_logs').insert({
+      await admin.from('audit_logs').insert({
         organization_id: agent.organization_id,
         user_id: user.id,
         action: existing ? 'update' : 'create',
