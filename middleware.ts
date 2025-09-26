@@ -27,7 +27,10 @@ export async function middleware(request: NextRequest) {
 
   // Protected routes that require authentication
   const protectedPaths = ['/api/appointments', '/api/calendar', '/api/realtime', '/api/org'];
-  const isProtectedPath = protectedPaths.some(path => request.nextUrl.pathname.startsWith(path));
+  // Allow unauthenticated access to specific public API endpoints
+  const publicApiPrefixes = ['/api/realtime/token'];
+  const isPublicApi = publicApiPrefixes.some((p) => request.nextUrl.pathname.startsWith(p));
+  const isProtectedPath = !isPublicApi && protectedPaths.some(path => request.nextUrl.pathname.startsWith(path));
   
   // Auth routes that should redirect if already logged in
   const authPaths = ['/auth/sign-in', '/auth/sign-up'];
