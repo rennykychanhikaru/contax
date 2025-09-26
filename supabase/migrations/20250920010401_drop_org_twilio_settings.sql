@@ -9,3 +9,4 @@ BEGIN
     DROP TABLE public.twilio_settings CASCADE;
   END IF;
 END $$;
+

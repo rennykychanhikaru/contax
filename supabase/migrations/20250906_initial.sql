@@ -6,7 +6,7 @@ create extension if not exists "pgcrypto";
 create extension if not exists "btree_gist";
 
 create table if not exists organizations (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   name text not null,
   phone_number text,
   timezone text default 'America/New_York',
@@ -17,7 +17,7 @@ create table if not exists organizations (
 );
 
 create table if not exists calls (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   organization_id uuid references organizations(id) on delete cascade,
   call_sid text,
   caller_phone text not null,
@@ -33,7 +33,7 @@ create table if not exists calls (
 );
 
 create table if not exists appointments (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   organization_id uuid references organizations(id) on delete cascade,
   call_id uuid references calls(id) on delete set null,
   customer_name text,
@@ -60,4 +60,3 @@ create table if not exists organization_settings (
 );
 
 -- RLS can be added later as needed for auth flows
-

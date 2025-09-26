@@ -100,15 +100,20 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Now let's re-encrypt any existing tokens that might be in the database
--- (This will be a no-op if tokens are already NULL)
-UPDATE public.agent_configurations
-SET 
-  google_calendar_access_token_encrypted = encrypt_google_token(
-    decrypt_google_token(google_calendar_access_token_encrypted, id), 
-    id
-  ),
-  google_calendar_refresh_token_encrypted = encrypt_google_token(
-    decrypt_google_token(google_calendar_refresh_token_encrypted, id), 
-    id
-  )
-WHERE google_calendar_connected = true;
+-- (Guarded so it’s a no-op if the table doesn’t exist yet)
+DO $$
+BEGIN
+  IF to_regclass('public.agent_configurations') IS NOT NULL THEN
+    UPDATE public.agent_configurations
+    SET 
+      google_calendar_access_token_encrypted = encrypt_google_token(
+        decrypt_google_token(google_calendar_access_token_encrypted, id), 
+        id
+      ),
+      google_calendar_refresh_token_encrypted = encrypt_google_token(
+        decrypt_google_token(google_calendar_refresh_token_encrypted, id), 
+        id
+      )
+    WHERE google_calendar_connected = true;
+  END IF;
+END $$;

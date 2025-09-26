@@ -54,7 +54,7 @@ BEGIN
     business_hours,
     settings
   ) VALUES (
-    uuid_generate_v4(),
+    gen_random_uuid(),
     org_name,
     'America/New_York',
     jsonb_build_object(

@@ -1,15 +1,21 @@
 -- Migration: Fix Multi-Tenant Signup Issue
 -- This migration ensures proper organization setup for users
 
--- 1. Drop existing policies if they exist
-DROP POLICY IF EXISTS "Users can view their own organization memberships" ON public.organization_members;
-DROP POLICY IF EXISTS "Users can manage memberships in their organizations" ON public.organization_members;
-DROP POLICY IF EXISTS "Users can view their organizations" ON public.organizations;
-DROP POLICY IF EXISTS "Owners can update their organizations" ON public.organizations;
+-- 1. Drop existing policies if they exist (guarded if tables are missing)
+DO $$ BEGIN
+  IF to_regclass('public.organization_members') IS NOT NULL THEN
+    EXECUTE 'DROP POLICY IF EXISTS "Users can view their own organization memberships" ON public.organization_members';
+    EXECUTE 'DROP POLICY IF EXISTS "Users can manage memberships in their organizations" ON public.organization_members';
+  END IF;
+  IF to_regclass('public.organizations') IS NOT NULL THEN
+    EXECUTE 'DROP POLICY IF EXISTS "Users can view their organizations" ON public.organizations';
+    EXECUTE 'DROP POLICY IF EXISTS "Owners can update their organizations" ON public.organizations';
+  END IF;
+END $$;
 
 -- 2. Create organization_members table if it doesn't exist
 CREATE TABLE IF NOT EXISTS public.organization_members (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   role TEXT NOT NULL DEFAULT 'owner',
@@ -61,7 +67,7 @@ BEGIN
     business_hours,
     settings
   ) VALUES (
-    uuid_generate_v4(),
+    gen_random_uuid(),
     user_name || '''s Organization',
     'America/New_York',
     jsonb_build_object(
@@ -136,7 +142,7 @@ BEGIN
       business_hours,
       settings
     ) VALUES (
-      uuid_generate_v4(),
+      gen_random_uuid(),
       user_name || '''s Organization',
       'America/New_York',
       jsonb_build_object(

@@ -1,6 +1,6 @@
 -- Create twilio_settings table
 CREATE TABLE IF NOT EXISTS public.twilio_settings (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES auth.users(id),
   account_sid TEXT NOT NULL,
@@ -66,7 +66,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Create audit_logs table if it doesn't exist
 CREATE TABLE IF NOT EXISTS public.audit_logs (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id UUID REFERENCES public.organizations(id) ON DELETE CASCADE,
   user_id UUID REFERENCES auth.users(id),
   action TEXT NOT NULL,

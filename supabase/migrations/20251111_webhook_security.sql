@@ -19,7 +19,7 @@ CREATE INDEX IF NOT EXISTS idx_organizations_webhook_token ON organizations(webh
 
 -- Create webhook audit log table for security monitoring
 CREATE TABLE IF NOT EXISTS webhook_logs (
-  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   organization_id uuid REFERENCES organizations(id) ON DELETE CASCADE,
   webhook_token text,
   ip_address inet,
@@ -123,10 +123,9 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- Function to generate secure webhook tokens
 CREATE OR REPLACE FUNCTION generate_webhook_token() RETURNS text AS $$
 BEGIN
-  -- Generate a URL-safe random token (32 bytes = 256 bits of entropy)
-  -- Using encode with base64 and replacing non-URL-safe characters
+  -- Generate a URL-safe random token using the extensions schema for pgcrypto
   RETURN replace(replace(replace(
-    encode(gen_random_bytes(32), 'base64'),
+    encode(extensions.gen_random_bytes(32), 'base64'),
     '+', '-'),
     '/', '_'),
     '=', '');
@@ -137,7 +136,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION generate_webhook_secret() RETURNS text AS $$
 BEGIN
   -- Generate a strong secret (48 bytes = 384 bits of entropy)
-  RETURN encode(gen_random_bytes(48), 'hex');
+  RETURN encode(extensions.gen_random_bytes(48), 'hex');
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 

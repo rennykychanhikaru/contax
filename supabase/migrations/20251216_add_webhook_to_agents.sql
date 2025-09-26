@@ -12,8 +12,8 @@ DECLARE
   done BOOLEAN DEFAULT false;
 BEGIN
   WHILE NOT done LOOP
-    -- Generate a random token (alphanumeric, 32 chars)
-    token := encode(gen_random_bytes(16), 'hex');
+    -- Generate a random token using UUID (32 hex chars after removing dashes)
+    token := replace(gen_random_uuid()::text, '-', '');
     
     -- Check if token already exists
     IF NOT EXISTS (
