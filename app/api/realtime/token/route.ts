@@ -133,6 +133,8 @@ export async function POST(req: NextRequest) {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      // Required beta header for Realtime Sessions API
+      'OpenAI-Beta': 'realtime=v1',
     },
     body: JSON.stringify({
       model: 'gpt-4o-realtime-preview-2024-12-17',
@@ -145,7 +147,9 @@ export async function POST(req: NextRequest) {
   const data = await response.json()
 
   if (!response.ok) {
-    return NextResponse.json({ error: data.error || 'Failed to create session' }, { status: response.status })
+    // Surface OpenAI error details to help diagnose env/model issues
+    const detail = typeof data === 'object' ? (data.error || data) : data
+    return NextResponse.json({ error: 'Failed to create session', detail }, { status: response.status || 500 })
   }
 
   return NextResponse.json(data)
