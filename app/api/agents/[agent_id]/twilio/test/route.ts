@@ -14,7 +14,7 @@ async function getSupabaseWithUser() {
       cookies: {
         getAll() { return cookieStore.getAll(); },
         setAll(cookiesToSet) {
-          try { cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)); } catch {}
+          try { cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)); } catch { /* ignore cookie set errors */ }
         },
       },
     }
@@ -83,16 +83,11 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ ag
       phoneOwned = Array.isArray(nums) && nums.length > 0;
     } catch { /* noop */ }
 
-    return NextResponse.json({
-      ok: true,
-      accountSid: account.sid,
-      accountFriendlyName: (account as any).friendlyName || null,
-      phoneNumber: settings.phone_number,
-      phoneOwned,
-    });
+    // Safely extract a friendly name if present
+    const friendly = (account as unknown as { friendlyName?: string }).friendlyName ?? null;
+    return NextResponse.json({ ok: true, accountSid: account.sid, accountFriendlyName: friendly, phoneNumber: settings.phone_number, phoneOwned });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : 'Unknown error';
     return NextResponse.json({ ok: false, error: msg }, { status: 200 });
   }
 }
-

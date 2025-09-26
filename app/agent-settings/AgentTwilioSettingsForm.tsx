@@ -1,11 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useAgentSettings } from '@/lib/hooks/useAgentSettings';
-
-const MASK = '********************************';
 
 export default function AgentTwilioSettingsForm({ agentId }: { agentId: string | null }) {
   const {
@@ -17,7 +15,6 @@ export default function AgentTwilioSettingsForm({ agentId }: { agentId: string |
     setTwilioPhoneNumber,
     twilioConfigured,
     isLoading,
-    isSaving,
     message,
     handleSaveTwilio,
   } = useAgentSettings(agentId);

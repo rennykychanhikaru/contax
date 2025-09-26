@@ -3,7 +3,6 @@ import { createServerClient } from '@supabase/ssr';
 import { redirect } from 'next/navigation';
 import CalendarSettings from './CalendarSettings';
 import Header from '../../components/Header';
-import OutgoingCallTrigger from '../../components/OutgoingCallTrigger';
 
 export default async function SettingsPage() {
   const cookieStore = await cookies();

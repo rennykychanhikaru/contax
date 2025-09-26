@@ -11,16 +11,12 @@ type AgentTwilioRow = {
   phone_number: string;
 };
 
-type OrgTwilioRow = {
-  account_sid: string;
-  auth_token: string;
-  phone_number: string;
-};
+// (Removed unused OrgTwilioRow type)
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { phoneNumber, organizationId, userId, agentId } = body;
+    const { phoneNumber, agentId } = body;
 
     if (!phoneNumber) {
       return NextResponse.json({ error: 'Phone number is required' }, { status: 400 });
@@ -112,20 +108,12 @@ export async function POST(req: NextRequest) {
       to: phoneNumber,
       from: fromNumber,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     console.error('Error creating outgoing call:', error);
-    
-    // Handle Twilio-specific errors
-    if (error.code) {
-      return NextResponse.json({
-        error: `Twilio error: ${error.message}`,
-        code: error.code,
-      }, { status: 400 });
+    const err = error as { code?: string; message?: string } | undefined;
+    if (err?.code) {
+      return NextResponse.json({ error: `Twilio error: ${err.message || 'unknown'}`, code: err.code }, { status: 400 });
     }
-    
-    return NextResponse.json({
-      error: 'Failed to create outgoing call',
-      details: error.message,
-    }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to create outgoing call', details: (err?.message || 'unknown') }, { status: 500 });
   }
 }

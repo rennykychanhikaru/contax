@@ -85,7 +85,7 @@ function phoneFromFormData(fd: FormData): string | undefined {
     }
   }
   // Fallback: any single string entry that looks like a phone
-  for (const [k, v] of fd.entries()) {
+  for (const [, v] of fd.entries()) {
     if (typeof v === 'string' && /\d/.test(v)) return v
   }
   return undefined

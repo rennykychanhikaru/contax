@@ -14,7 +14,7 @@ function toE164Loose(raw: string): string | null {
   return null
 }
 
-function findPhoneNumber(obj: any): string | null {
+function findPhoneNumber(obj: unknown): string | null {
   if (!obj) return null;
 
   if (Array.isArray(obj)) {
@@ -23,15 +23,17 @@ function findPhoneNumber(obj: any): string | null {
       if (found) return found;
     }
   } else if (typeof obj === 'object') {
-    for (const key in obj) {
-      if (typeof obj[key] === 'string' || typeof obj[key] === 'number') {
-        const potentialPhone = toE164Loose(String(obj[key]));
+    const rec = obj as Record<string, unknown>;
+    for (const key in rec) {
+      const val = rec[key];
+      if (typeof val === 'string' || typeof val === 'number') {
+        const potentialPhone = toE164Loose(String(val));
         if (potentialPhone) return potentialPhone;
       }
     }
     // If no direct string is a phone number, check nested objects
-    for (const key in obj) {
-      const found = findPhoneNumber(obj[key]);
+    for (const key in rec) {
+      const found = findPhoneNumber(rec[key]);
       if (found) return found;
     }
   }

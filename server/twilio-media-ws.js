@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars, no-useless-escape, no-empty */
 /*
   Standalone Twilio Media Streams WebSocket bridge (Node.js)
 

@@ -12,14 +12,12 @@ export async function POST(req: NextRequest) {
   let agentId: string | undefined
   let requestBody: Record<string, unknown> = {}
   let systemPrompt: string | undefined
-  let greeting: string | undefined
   let language: string | undefined
 
   try {
     requestBody = await req.json()
     agentId = requestBody.agentId as string | undefined
     systemPrompt = (requestBody.systemPrompt as string | undefined)?.toString()
-    greeting = (requestBody.greeting as string | undefined)?.toString()
     language = (requestBody.language as string | undefined)?.toString()
   } catch {
     // If body parsing fails, continue without agentId
