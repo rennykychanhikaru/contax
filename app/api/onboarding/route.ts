@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
+import { createClient } from '@supabase/supabase-js';
 
 export async function POST(request: NextRequest) {
   const { organizationName } = await request.json();
@@ -31,10 +32,23 @@ export async function POST(request: NextRequest) {
     }
   );
 
-  // Get authenticated user
-  const { data: { user } } = await supabase.auth.getUser();
+  // Get authenticated user (from Authorization header access token)
+  const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice('Bearer '.length)
+    : undefined;
+
+  const supabaseAnon = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+  let userId: string | null = null;
+  if (token) {
+    const userResp = await supabaseAnon.auth.getUser(token);
+    userId = userResp.data?.user?.id ?? null;
+  }
   
-  if (!user) {
+  if (!userId) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -43,7 +57,7 @@ export async function POST(request: NextRequest) {
     const { data: existingMembership } = await supabase
       .from('organization_members')
       .select('organization_id')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .single();
 
     if (existingMembership) {
@@ -84,7 +98,7 @@ export async function POST(request: NextRequest) {
       .from('organization_members')
       .insert({
         organization_id: org.id,
-        user_id: user.id,
+        user_id: userId,
         role: 'owner'
       });
 
@@ -97,7 +111,7 @@ export async function POST(request: NextRequest) {
     await supabase
       .from('users')
       .update({ onboarded: true })
-      .eq('id', user.id);
+      .eq('id', userId);
 
     return NextResponse.json({ success: true, organization: org });
   } catch (error) {
