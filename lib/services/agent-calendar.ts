@@ -116,7 +116,7 @@ export async function storeAgentCalendarTokens(
 ): Promise<boolean> {
   const supabase = await createClient();
   
-  const { error } = await supabase.rpc('store_agent_google_tokens', {
+  const { data, error } = await supabase.rpc('store_agent_google_tokens', {
     p_agent_id: agentId,
     p_access_token: accessToken,
     p_refresh_token: refreshToken,
@@ -139,7 +139,7 @@ export async function storeAgentCalendarTokens(
 export async function disconnectAgentCalendar(agentId: string): Promise<boolean> {
   const supabase = await createClient();
   
-  const { error } = await supabase.rpc('disconnect_agent_google_calendar', {
+  const { data, error } = await supabase.rpc('disconnect_agent_google_calendar', {
     p_agent_id: agentId
   });
   
