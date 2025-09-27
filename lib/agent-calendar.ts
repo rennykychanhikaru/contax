@@ -109,17 +109,17 @@ export async function refreshAgentToken(
 export async function storeAgentCalendarTokens(
   agentId: string,
   accessToken: string,
-  refreshToken: string,
+  refreshToken: string | null,
   expiresIn: number,
   email?: string,
   calendarId?: string
 ): Promise<boolean> {
   const supabase = await createClient();
-  
+
   const { data, error } = await supabase.rpc('store_agent_google_tokens', {
     p_agent_id: agentId,
     p_access_token: accessToken,
-    p_refresh_token: refreshToken,
+    p_refresh_token: refreshToken || null,
     p_expires_in: expiresIn,
     p_email: email || null,
     p_calendar_id: calendarId || null
