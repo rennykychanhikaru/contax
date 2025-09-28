@@ -1,12 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
-import {
-  storeAgentCalendarTokens,
-  validateAgentAccess,
-  storeAgentCalendars,
-  getAgentCalendarTokens
-} from '@/lib/agent-calendar';
+import { storeAgentCalendarTokens, validateAgentAccess, storeAgentCalendars, getAgentCalendarTokens } from '@/lib/agent-calendar';
 import { listCalendars } from '@/lib/google';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -129,18 +124,23 @@ export async function GET(req: NextRequest) {
       primaryCalendarId = userInfo.email; // Primary calendar is usually the email
     }
     
-    // Ensure we have a refresh token. Google omits it on subsequent consents, so reuse the existing one if present.
-    let refreshToken: string | null = tokenData.refresh_token || null;
-    if (!refreshToken) {
-      const existingIntegration = await getAgentCalendarTokens(stateData.agent_id);
-      if (existingIntegration?.refresh_token) {
-        refreshToken = existingIntegration.refresh_token;
+    // Ensure we have a refresh token; Google may omit it on re-consent
+    let refreshTokenToStore: string | undefined = tokenData.refresh_token;
+    if (!refreshTokenToStore) {
+      try {
+        const existing = await getAgentCalendarTokens(stateData.agent_id);
+        if (existing?.refresh_token) {
+          refreshTokenToStore = existing.refresh_token;
+        }
+      } catch (e) {
+        // Non-fatal; handled below
+        console.warn('Could not load existing agent tokens:', e);
       }
     }
 
-    if (!refreshToken) {
+    if (!refreshTokenToStore) {
       const errorUrl = new URL(stateData.redirect_url, req.nextUrl.origin);
-      errorUrl.searchParams.set('error', 'Google did not return a refresh token. Please remove access and try again.');
+      errorUrl.searchParams.set('error', 'Google did not return a refresh token. Please revoke access and try again.');
       return NextResponse.redirect(errorUrl.toString());
     }
 
@@ -148,7 +148,7 @@ export async function GET(req: NextRequest) {
     const stored = await storeAgentCalendarTokens(
       stateData.agent_id,
       tokenData.access_token,
-      refreshToken,
+      refreshTokenToStore,
       tokenData.expires_in,
       userEmail,
       primaryCalendarId
