@@ -36,6 +36,10 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private fallbackTimer: NodeJS.Timeout | null = null
   private lastTranscript: string = ''
   private tz: string | undefined
+  // Turn-taking and gating controls
+  private waitingForUser: boolean = false
+  private agentSpeaking: boolean = false
+  private repromptTimer: NodeJS.Timeout | null = null
 
   constructor(opts?: {
     onTranscript?: (text: string) => void
@@ -56,9 +60,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
   private requireTool(name: 'check' | 'slots') {
     // Cancel any current generation and require a tool call
-    try { this.sendOAI({ type: 'response.cancel' }) } catch {
-    // Error handled
-  }
+    this.sendOAI({ type: 'response.cancel' })
     const instructions =
       name === 'slots'
         ? 'User asked for day availability. Call getAvailableSlots with the requested date (YYYY-MM-DD). Do not state times unless they come from the tool result.'
@@ -118,13 +120,33 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           .catch(() => this.speak('I could not verify that time just now.'))
       }, 3500)
     }
+
+    // Apply safer server VAD and strict patience/consent rules for the session
+    const patienceGuidance = (
+      'Turn-taking rules:\n' +
+      '- Wait about 0.8–1.2 seconds after the caller finishes before replying.\n' +
+      "- Do not assume consent. Never proceed unless the caller explicitly responds (e.g., 'yes' or a relevant answer).\n" +
+      '- Treat background noise or one-syllable utterances as unclear; ask a brief clarification instead of assuming yes.\n' +
+      '- If the caller starts speaking while you are speaking, immediately stop and let them finish (barge-in).\n' +
+      '- After greeting, do not ask the next question until the caller responds.'
+    )
+    this.sendOAI({
+      type: 'session.update',
+      session: {
+        turn_detection: { type: 'server_vad', silence_duration_ms: 1000, prefix_ms: 200 },
+        instructions: `${systemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidance}`
+      }
+    })
   }
 
-  private speak(text: string) {
+  private speak(text: string, opts?: { bypassGate?: boolean }) {
     // Try to cancel any ongoing response first
-    try { this.sendOAI({ type: 'response.cancel' }) } catch {
-    // Error handled
-  }
+    this.sendOAI({ type: 'response.cancel' })
+    // Respect initial wait-for-user gate unless explicitly bypassed (e.g., reprompt)
+    if (this.waitingForUser && !opts?.bypassGate) {
+      this.onToolEvent?.({ kind: 'event', type: 'gated', text })
+      return
+    }
     
     // Report what we're trying to say
     this.onToolEvent?.({ kind: 'event', type: 'spoken', text })
@@ -265,6 +287,15 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           modalities: ['audio', 'text']
         }
       })
+      // After greeting, gate any further speech until we hear meaningful user speech
+      this.waitingForUser = true
+      // One-time short reprompt if silence persists
+      if (this.repromptTimer) clearTimeout(this.repromptTimer)
+      this.repromptTimer = setTimeout(() => {
+        if (this.waitingForUser) {
+          this.speak('Is this a good time to chat?', { bypassGate: true })
+        }
+      }, 8000)
     }
   }
 
@@ -272,8 +303,11 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     try {
       this.sendOAI({ type: 'response.cancel' })
     } catch {
-    // Error handled
-  }
+      void 0; // noop
+    }
+    if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
+    this.waitingForUser = false
+    this.agentSpeaking = false
     this.pc?.close()
     this.pc = null
     this.mic?.getTracks().forEach((t) => t.stop())
@@ -299,10 +333,33 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           this.onToolEvent?.({ kind: 'event', type: k })
         }
       }
+      // Track assistant speaking lifecycle for barge-in handling
+      if (msg.type === 'response.started') {
+        this.agentSpeaking = true
+      }
+      if (msg.type === 'response.completed' || msg.type === 'response.audio.done' || msg.type === 'response.done') {
+        this.agentSpeaking = false
+      }
+
       // Simple transcript tap if present
       if (msg.type === 'transcript') {
-        this.lastTranscript = msg.text
-        if (this.onTranscript) this.onTranscript(msg.text)
+        const ttext = (msg.text as string) || ''
+        this.lastTranscript = ttext
+        if (this.onTranscript) this.onTranscript(ttext)
+        const cleaned = ttext.replace(/\s+/g, ' ').trim()
+        const meaningful = /\b(yes|yeah|yep|sure|okay|ok|no|not|busy|later|schedule|appointment|property|budget|name|email|phone)\b/i.test(cleaned) || cleaned.length >= 8
+
+        // Barge-in: if user starts speaking, stop the agent immediately
+        if (this.agentSpeaking && cleaned.length) {
+          this.sendOAI({ type: 'response.cancel' })
+          this.agentSpeaking = false
+        }
+
+        // Clear waiting gate only on meaningful transcript
+        if (this.waitingForUser && meaningful) {
+          this.waitingForUser = false
+          if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
+        }
         // After first user transcript, arm tool usage with explicit guidance (once)
         if (!this.toolHintSent) {
           const toolHint = `Use tools for scheduling. When the caller mentions a specific time, call checkAvailability with start at that exact local time and end=start+60 minutes (unless the user requested a different duration). Do not check a whole day when a specific time was requested. If checkAvailability shows conflicts, do not proceed to booking; propose the next free times. Format dates as RFC3339 with timezone (e.g., 2025-09-10T10:00:00-04:00). Default organizationId=${this.defaultOrgId || 'unknown'}, calendarId=${this.defaultCalendarId || 'primary'}.`
@@ -313,7 +370,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           this.toolHintSent = true
         }
         // Heuristic: day availability question -> require getAvailableSlots
-        const t = (msg.text as string).toLowerCase()
+        const t = ttext.toLowerCase()
         const hasTime = /\b(\d{1,2})(?::(\d{2}))?\s?(am|pm)?\b/.test(t) || /\bnoon\b|\bmidnight\b/.test(t)
         const dayQuery = /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|this\s+week|availability|free|open)\b/.test(t)
         if (dayQuery && !hasTime) this.requireTool('slots')
@@ -487,23 +544,17 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
               body: JSON.stringify({ date, slotMinutes: 60, calendarIds: this.calendarIds })
             })
             let j: unknown = null
-            try { j = await r2.json() } catch {
-    // Error handled
-  }
+            try { j = await r2.json() } catch { void 0; /* noop */ }
             if (r2.ok && j?.slots?.length) {
               const tz2 = j.timeZone
-              try { this.onSlots?.(j.slots, tz2) } catch {
-    // Error handled
-  }
+              try { this.onSlots?.(j.slots, tz2) } catch { void 0; /* noop */ }
               const list = j.slots.slice(0, 5).map((it: unknown) => this.fmtRange(it.start, it.end, tz2)).join(', ')
               spokenResponse = `Sorry, ${requestedTime} is not available. The available times that day are: ${list}.`
             } else {
               spokenResponse = `Sorry, ${requestedTime} is not available and I could not retrieve alternative slots for that day.`
             }
           }
-        } catch {
-    // Error handled
-  }
+        } catch { void 0; /* noop */ }
         
         // Send tool result with suppression flag, then speak our response
         await this.sendToolResult(callId, res, true)
@@ -546,9 +597,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
             const e = res?.end || args.end
             spokenResponse = `Perfect! I've booked ${this.fmtRange(s, e, tz)} for you. It's now on your calendar.`
           }
-        } catch {
-    // Error handled
-  }
+        } catch { void 0; /* noop */ }
         
         await this.sendToolResult(callId, res, true)
         if (spokenResponse) {
@@ -585,9 +634,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         try {
           if (Array.isArray(res?.slots)) {
             const tz = res?.timeZone
-            try { this.onSlots?.(res.slots, tz) } catch {
-    // Error handled
-  }
+            try { this.onSlots?.(res.slots, tz) } catch { void 0; /* noop */ }
             if (res.slots.length === 0) {
               spokenResponse = 'No free slots found that day.'
             } else {
@@ -597,9 +644,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           } else if (res?.error) {
             spokenResponse = 'I could not retrieve the day availability at the moment.'
           }
-        } catch {
-    // Error handled
-  }
+        } catch { void 0; /* noop */ }
         
         await this.sendToolResult(callId, res, true)
         if (spokenResponse) {
@@ -653,9 +698,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         for (const msg of this.pendingMessages) {
           try {
             channel.send(JSON.stringify(msg))
-          } catch {
-            // ignore send failures
-          }
+          } catch { void 0; /* ignore send failures */ }
         }
         this.pendingMessages = []
       }

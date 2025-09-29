@@ -128,6 +128,10 @@ wss.on('connection', (ws) => {
   let agentId
   let selectedVoice = 'sage'
   let greetingDone = false
+  let waitingForUser = false
+  let agentSpeakingNow = false
+  /** @type {NodeJS.Timeout|null} */
+  let repromptTimer = null
   // Track tool calls by call_id
   const toolBuffers = new Map()
 
@@ -174,7 +178,7 @@ wss.on('connection', (ws) => {
         // Persona and conversation guidance
         const lang = languageCode || 'en-US'
         const basePrompt = agentPrompt || 'You are a helpful voice assistant.'
-        let sessionInstructions = `${basePrompt}\n\nLanguage: Detect and mirror the caller's language automatically. If the caller switches languages, adapt immediately.\nConversation: Keep responses concise and conversational. Avoid interrupting; wait briefly after the caller finishes before speaking. If you're uncertain what the caller said, ask for clarification. Confirm critical details like dates, times, names, and numbers.\nSpeaking style: Speak at a natural but brisk pace and avoid long pauses between sentences.`
+        let sessionInstructions = `${basePrompt}\n\nLanguage: Detect and mirror the caller's language automatically. If the caller switches languages, adapt immediately.\nConversation: Keep responses concise and conversational. Avoid interrupting; wait about 0.8–1.2 seconds after the caller finishes before speaking. If you're uncertain what the caller said, ask for clarification. Confirm critical details like dates, times, names, and numbers.\nSpeaking style: Speak at a natural but brisk pace and avoid long pauses between sentences.\nTurn-taking rules: Do not assume consent. Never proceed unless the caller explicitly responds. Treat background noise or one-syllable utterances as unclear and ask a brief clarification instead of assuming yes. If the caller starts speaking while you are speaking, immediately stop and let them finish (barge-in). After greeting, do not ask the next question until the caller responds.`
         
         if (greetingText) {
           const safeGreeting = String(greetingText).replace(/"/g, '\"')
@@ -191,8 +195,8 @@ wss.on('connection', (ws) => {
             // Output μ-law 8k directly from Realtime for reliable pacing
             output_audio_format: 'pcm16',
             input_audio_format: 'g711_ulaw',
-            // Enable automatic speech turns (use default server VAD timing)
-            turn_detection: { type: 'server_vad' },
+            // Enable automatic speech turns with a slightly longer silence window
+            turn_detection: { type: 'server_vad', silence_duration_ms: 1000, prefix_ms: 200 },
             instructions: sessionInstructions
           }
         }))
@@ -210,6 +214,26 @@ wss.on('connection', (ws) => {
               msg.type !== 'transcript'
             ) {
               console.log('[oai.event]', msg.type)
+            }
+          }
+          // Track assistant speaking lifecycle and user barge-in
+          if (msg?.type === 'response.started') {
+            agentSpeakingNow = true
+          }
+          if (msg?.type === 'response.completed' || msg?.type === 'response.audio.done' || msg?.type === 'response.done') {
+            agentSpeakingNow = false
+          }
+          if (msg?.type === 'transcript') {
+            const t = (msg.text || '').toString()
+            const cleaned = t.replace(/\s+/g, ' ').trim()
+            const meaningful = /(yes|yeah|yep|sure|okay|ok|no|not|busy|later|schedule|appointment|property|budget|name|email|phone)/i.test(cleaned) || cleaned.length >= 8
+            if (agentSpeakingNow && cleaned.length) {
+              try { rws.send(JSON.stringify({ type: 'response.cancel' })) } catch (_) { /* noop */ }
+              agentSpeakingNow = false
+            }
+            if (waitingForUser && meaningful) {
+              waitingForUser = false
+              if (repromptTimer) { try { clearTimeout(repromptTimer) } catch (_) { /* noop */ } repromptTimer = null }
             }
           }
           // Function/tool calling lifecycle
@@ -246,6 +270,16 @@ wss.on('connection', (ws) => {
               try {
                 rws.send(JSON.stringify({ type: 'response.create', response: { instructions: instr, modalities: ['audio','text'] } }))
                 console.log('[oai.response.create] sent greeting turn')
+                // After greeting, wait for explicit user response
+                waitingForUser = true
+                if (repromptTimer) { try { clearTimeout(repromptTimer) } catch (_) { /* noop */ } }
+                repromptTimer = setTimeout(() => {
+                  if (waitingForUser) {
+                    try {
+                      rws.send(JSON.stringify({ type: 'response.create', response: { instructions: 'Say exactly: "Is this a good time to chat?"', modalities: ['audio','text'] } }))
+                    } catch (_) { /* noop */ }
+                  }
+                }, 8000)
               } catch (e) {
                 console.warn('[oai.response.create.error]', e?.message)
               }
@@ -389,6 +423,10 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     clearInterval(sendTicker)
     try { if (oai.ws) oai.ws.close() } catch (e) { /* ignore */ }
+    try { if (repromptTimer) clearTimeout(repromptTimer) } catch (_) { /* noop */ }
+    repromptTimer = null
+    waitingForUser = false
+    agentSpeakingNow = false
   })
 })
 
@@ -453,7 +491,7 @@ function downsample24kTo8kLinear(pcm24k) {
 
 async function invokeToolAndRespond(rws, callId, name, argsJson, ctx) {
   let args = {}
-  try { args = argsJson ? JSON.parse(argsJson) : {} } catch {}
+  try { args = argsJson ? JSON.parse(argsJson) : {} } catch { /* noop */ }
 
   // Infer function if omitted
   let effective = name || 'unknown'
