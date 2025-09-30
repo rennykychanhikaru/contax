@@ -133,7 +133,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     this.sendOAI({
       type: 'session.update',
       session: {
-        turn_detection: { type: 'server_vad', silence_duration_ms: 1000, prefix_ms: 200 },
+        turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
         instructions: `${systemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidance}`
       }
     })
