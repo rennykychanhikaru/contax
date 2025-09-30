@@ -131,6 +131,7 @@ wss.on('connection', (ws) => {
   let waitingForUser = false
   let agentSpeakingNow = false
   let greetConsentRequired = false
+  let canceledDuringWait = false
   // Track tool calls by call_id
   const toolBuffers = new Map()
 
@@ -241,11 +242,13 @@ wss.on('connection', (ws) => {
                 if (affirmative) {
                   waitingForUser = false
                   greetConsentRequired = false
+                  canceledDuringWait = false
                 } else {
                   // Remain waiting; do not advance on non-affirmative
                 }
               } else if (meaningful) {
                 waitingForUser = false
+                canceledDuringWait = false
               }
             }
           }
@@ -301,6 +304,13 @@ wss.on('connection', (ws) => {
           }
           // Handle audio deltas: downsample, encode, and forward
           if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
+            if (waitingForUser) {
+              if (!canceledDuringWait) {
+                try { rws.send(JSON.stringify({ type: 'response.cancel' })) } catch (_) { /* noop */ }
+                canceledDuringWait = true
+              }
+              return
+            }
             console.time('audio_processing');
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
