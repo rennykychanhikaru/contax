@@ -40,6 +40,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private waitingForUser: boolean = false
   private agentSpeaking: boolean = false
   private repromptTimer: NodeJS.Timeout | null = null
+  private consentRequired: boolean = false
 
   constructor(opts?: {
     onTranscript?: (text: string) => void
@@ -276,7 +277,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     const answer = { type: 'answer', sdp: await sdpResponse.text() } as RTCSessionDescriptionInit
     await pc.setRemoteDescription(answer)
 
-    // Speak the explicit greeting first (if provided), without jumping into scheduling yet
+    // Speak the explicit greeting first (if provided), then wait for explicit consent
     if (opts?.greeting) {
       const safe = opts.greeting.replace(/"/g, '\\"')
       const greetOnly = `Say exactly: "${safe}". Then stop speaking and wait for the caller to respond.`
@@ -287,15 +288,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           modalities: ['audio', 'text']
         }
       })
-      // After greeting, gate any further speech until we hear meaningful user speech
+      // After greeting, require explicit affirmative consent before proceeding
       this.waitingForUser = true
-      // One-time short reprompt if silence persists
-      if (this.repromptTimer) clearTimeout(this.repromptTimer)
-      this.repromptTimer = setTimeout(() => {
-        if (this.waitingForUser) {
-          this.speak('Is this a good time to chat?', { bypassGate: true })
-        }
-      }, 8000)
+      this.consentRequired = true
     }
   }
 
@@ -340,6 +335,10 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       if (msg.type === 'response.completed' || msg.type === 'response.audio.done' || msg.type === 'response.done') {
         this.agentSpeaking = false
       }
+      // If still waiting for consent, cancel assistant responses immediately
+      if ((msg.type === 'response.created' || msg.type === 'response.started') && this.waitingForUser) {
+        this.sendOAI({ type: 'response.cancel' })
+      }
 
       // Simple transcript tap if present
       if (msg.type === 'transcript') {
@@ -355,10 +354,21 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           this.agentSpeaking = false
         }
 
-        // Clear waiting gate only on meaningful transcript
-        if (this.waitingForUser && meaningful) {
-          this.waitingForUser = false
-          if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
+        // Clear waiting gate only with consent or meaningful speech
+        if (this.waitingForUser) {
+          const affirmative = /\b(yes|yeah|yep|sure|okay|ok|sounds good|that works)\b/i.test(cleaned)
+          if (this.consentRequired) {
+            if (affirmative) {
+              this.waitingForUser = false
+              this.consentRequired = false
+              if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
+            } else {
+              // keep waiting
+            }
+          } else if (meaningful) {
+            this.waitingForUser = false
+            if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
+          }
         }
         // After first user transcript, arm tool usage with explicit guidance (once)
         if (!this.toolHintSent) {

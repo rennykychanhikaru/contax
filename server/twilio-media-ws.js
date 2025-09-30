@@ -130,8 +130,7 @@ wss.on('connection', (ws) => {
   let greetingDone = false
   let waitingForUser = false
   let agentSpeakingNow = false
-  /** @type {NodeJS.Timeout|null} */
-  let repromptTimer = null
+  let greetConsentRequired = false
   // Track tool calls by call_id
   const toolBuffers = new Map()
 
@@ -223,6 +222,10 @@ wss.on('connection', (ws) => {
           if (msg?.type === 'response.completed' || msg?.type === 'response.audio.done' || msg?.type === 'response.done') {
             agentSpeakingNow = false
           }
+          // If still waiting for consent, cancel any assistant output turn immediately
+          if ((msg?.type === 'response.created' || msg?.type === 'response.started') && waitingForUser) {
+            try { rws.send(JSON.stringify({ type: 'response.cancel' })) } catch (_) { /* noop */ }
+          }
           if (msg?.type === 'transcript') {
             const t = (msg.text || '').toString()
             const cleaned = t.replace(/\s+/g, ' ').trim()
@@ -231,9 +234,19 @@ wss.on('connection', (ws) => {
               try { rws.send(JSON.stringify({ type: 'response.cancel' })) } catch (_) { /* noop */ }
               agentSpeakingNow = false
             }
-            if (waitingForUser && meaningful) {
-              waitingForUser = false
-              if (repromptTimer) { try { clearTimeout(repromptTimer) } catch (_) { /* noop */ } repromptTimer = null }
+            // Require explicit affirmative consent right after greeting
+            const affirmative = /\b(yes|yeah|yep|sure|okay|ok|sounds good|that works)\b/i.test(cleaned)
+            if (waitingForUser) {
+              if (greetConsentRequired) {
+                if (affirmative) {
+                  waitingForUser = false
+                  greetConsentRequired = false
+                } else {
+                  // Remain waiting; do not advance on non-affirmative
+                }
+              } else if (meaningful) {
+                waitingForUser = false
+              }
             }
           }
           // Function/tool calling lifecycle
@@ -270,16 +283,9 @@ wss.on('connection', (ws) => {
               try {
                 rws.send(JSON.stringify({ type: 'response.create', response: { instructions: instr, modalities: ['audio','text'] } }))
                 console.log('[oai.response.create] sent greeting turn')
-                // After greeting, wait for explicit user response
+                // After greeting, require explicit affirmative user response before proceeding
                 waitingForUser = true
-                if (repromptTimer) { try { clearTimeout(repromptTimer) } catch (_) { /* noop */ } }
-                repromptTimer = setTimeout(() => {
-                  if (waitingForUser) {
-                    try {
-                      rws.send(JSON.stringify({ type: 'response.create', response: { instructions: 'Say exactly: "Is this a good time to chat?"', modalities: ['audio','text'] } }))
-                    } catch (_) { /* noop */ }
-                  }
-                }, 8000)
+                greetConsentRequired = true
               } catch (e) {
                 console.warn('[oai.response.create.error]', e?.message)
               }
@@ -423,10 +429,9 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     clearInterval(sendTicker)
     try { if (oai.ws) oai.ws.close() } catch (e) { /* ignore */ }
-    try { if (repromptTimer) clearTimeout(repromptTimer) } catch (_) { /* noop */ }
-    repromptTimer = null
     waitingForUser = false
     agentSpeakingNow = false
+    greetConsentRequired = false
   })
 })
 
