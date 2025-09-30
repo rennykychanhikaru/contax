@@ -1,142 +1,55 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
-import { getAgentCalendarTokens, validateAgentAccess } from '@/lib/agent-calendar';
-import { createCalendarEvent, checkCalendarAvailability } from '@/lib/google';
+import { getAgentCalendarTokens } from '@/lib/agent-calendar';
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ agent_id: string }> }
-) {
+async function getAgentAccessToken(agentId: string): Promise<string | null> {
+  const tokens = await getAgentCalendarTokens(agentId);
+  return tokens?.access_token || null;
+}
+
+export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: string }> }) {
   try {
-    const { agent_id } = await params;
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options);
-              });
-            } catch (error) {
-              console.error('Error setting cookies:', error);
-            }
-          },
-        },
-      }
-    );
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    
-    // Validate agent access
-    const agentAccess = await validateAgentAccess(agent_id, user.id);
-    if (!agentAccess) {
-      return NextResponse.json({ error: 'Agent not found or access denied' }, { status: 404 });
-    }
-    
+    const { agent_id } = await ctx.params;
     const body = await req.json();
-    const { customer, start, end, notes, calendarId } = body;
-    
+    type Customer = { name?: string; email?: string; phone?: string };
+    const { start, end, customer, notes } = body as { start?: string; end?: string; customer?: Customer; notes?: string };
     if (!start || !end) {
-      return NextResponse.json(
-        { error: 'Start and end times are required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Missing start/end' }, { status: 400 });
     }
-    
-    // Get agent calendar tokens
-    const tokens = await getAgentCalendarTokens(agent_id);
-    
-    if (!tokens || !tokens.access_token) {
-      return NextResponse.json(
-        { error: 'Agent calendar not connected' },
-        { status: 400 }
-      );
-    }
-    
-    // Use provided calendar ID or agent's primary calendar
-    const targetCalendarId = calendarId || tokens.calendar_id || 'primary';
-    
-    // Check for conflicts before booking
-    const availability = await checkCalendarAvailability(
-      tokens.access_token,
-      start,
-      end,
-      targetCalendarId
-    );
-    
-    if (!availability.available) {
-      return NextResponse.json(
-        { 
-          error: 'Time slot is not available',
-          conflicts: availability.conflicts 
-        },
-        { status: 409 }
-      );
-    }
-    
-    // Create the calendar event
-    const event = await createCalendarEvent(
-      tokens.access_token,
-      {
-        summary: customer?.name ? `Meeting with ${customer.name}` : 'Meeting',
-        description: notes || `Booked via Agent: ${agentAccess.agent.name}`,
-        start: { dateTime: start, timeZone: 'America/Los_Angeles' },
-        end: { dateTime: end, timeZone: 'America/Los_Angeles' },
-        attendees: customer?.email ? [{ email: customer.email }] : [],
-      },
-      targetCalendarId
-    );
-    
-    // Store appointment in database
-    const { data: appointment, error: dbError } = await supabase
-      .from('appointments')
-      .insert({
-        organization_id: agentAccess.organization.id,
-        agent_id: agent_id,
-        customer_name: customer?.name,
-        customer_email: customer?.email,
-        customer_phone: customer?.phone,
-        scheduled_start: start,
-        scheduled_end: end,
-        google_event_id: event.id,
-        google_calendar_id: targetCalendarId,
-        notes: notes,
-        status: 'scheduled'
-      })
-      .select()
-      .single();
-    
-    if (dbError) {
-      console.error('Failed to store appointment in database:', dbError);
-    }
-    
-    return NextResponse.json({
-      success: true,
-      event: {
-        id: event.id,
-        htmlLink: event.htmlLink,
-        start: event.start,
-        end: event.end,
-        summary: event.summary,
-        meetLink: event.hangoutLink
-      },
-      appointment
+
+    const accessToken = await getAgentAccessToken(agent_id);
+    if (!accessToken) return NextResponse.json({ error: 'calendar_not_connected' }, { status: 409 });
+
+    const summary = customer?.name ? `Consultation with ${customer.name}` : 'Consultation';
+    const event: {
+      summary: string;
+      description?: string;
+      start: { dateTime: string };
+      end: { dateTime: string };
+      conferenceData: { createRequest: { requestId: string; conferenceSolutionKey: { type: 'hangoutsMeet' } } };
+      attendees?: Array<{ email: string }>;
+    } = {
+      summary,
+      description: notes || undefined,
+      start: { dateTime: new Date(start).toISOString() },
+      end: { dateTime: new Date(end).toISOString() },
+      conferenceData: { createRequest: { requestId: `mtg-${Date.now()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } },
+      attendees: customer?.email ? [{ email: customer.email }] : undefined,
+    };
+
+    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(event)
     });
-  } catch (error) {
-    console.error('Error booking appointment:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to book appointment' },
-      { status: 500 }
-    );
+    let payload: unknown = null;
+    try { payload = await r.json(); } catch { payload = null; }
+    if (!r.ok) {
+      return NextResponse.json({ error: 'google_error', status: r.status, detail: payload }, { status: r.status });
+    }
+    const p = payload as { id?: string; htmlLink?: string } | null;
+    return NextResponse.json({ success: true, event: { id: p?.id, link: p?.htmlLink, start, end } });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }

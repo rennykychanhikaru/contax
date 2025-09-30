@@ -4,8 +4,9 @@ import { createServerClient } from '@supabase/ssr';
 import { getAdminClient } from '@/lib/db/admin';
 
 // GET - Get the agent for the user's organization
-export async function GET(req: NextRequest, { params }: { params: { agent_id: string } }) {
-  const agentId = params.agent_id;
+export async function GET(req: NextRequest, { params }: { params: Promise<{ agent_id: string }> }) {
+  const { agent_id } = await params;
+  const agentId = agent_id;
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -98,8 +99,9 @@ export async function GET(req: NextRequest, { params }: { params: { agent_id: st
 }
 
 // POST - Save or update the agent settings
-export async function POST(req: NextRequest, { params }: { params: { agent_id: string } }) {
-  const agentId = params.agent_id;
+export async function POST(req: NextRequest, { params }: { params: Promise<{ agent_id: string }> }) {
+  const { agent_id } = await params;
+  const agentId = agent_id;
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

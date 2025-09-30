@@ -1,142 +1,53 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
-import { getAgentCalendarTokens, validateAgentAccess, getAgentCalendars } from '@/lib/agent-calendar';
-import { checkCalendarAvailability } from '@/lib/google';
+import { getAgentCalendarTokens } from '@/lib/agent-calendar';
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ agent_id: string }> }
-) {
+async function getAgentAccessToken(agentId: string): Promise<string | null> {
+  const tokens = await getAgentCalendarTokens(agentId);
+  return tokens?.access_token || null;
+}
+
+export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: string }> }) {
   try {
-    const { agent_id } = await params;
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options);
-              });
-            } catch (error) {
-              console.error('Error setting cookies:', error);
-            }
-          },
-        },
-      }
-    );
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    
-    // Validate agent access
-    const agentAccess = await validateAgentAccess(agent_id, user.id);
-    if (!agentAccess) {
-      return NextResponse.json({ error: 'Agent not found or access denied' }, { status: 404 });
-    }
-    
+    const { agent_id } = await ctx.params;
     const body = await req.json();
-    const { 
-      date, 
-      slotMinutes = 30, 
-      businessHours = { start: '09:00', end: '17:00' },
-      calendarIds 
-    } = body;
-    
-    if (!date) {
-      return NextResponse.json(
-        { error: 'Date is required' },
-        { status: 400 }
-      );
+    const { date, slotMinutes = 60 } = body as { date?: string; slotMinutes?: number };
+    if (!date) return NextResponse.json({ error: 'Missing date' }, { status: 400 });
+
+    const accessToken = await getAgentAccessToken(agent_id);
+    if (!accessToken) return NextResponse.json({ error: 'calendar_not_connected' }, { status: 409 });
+
+    const startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(date); endOfDay.setHours(23, 59, 59, 999);
+    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+    url.searchParams.append('timeMin', startOfDay.toISOString());
+    url.searchParams.append('timeMax', endOfDay.toISOString());
+    url.searchParams.append('singleEvents', 'true');
+    url.searchParams.append('orderBy', 'startTime');
+    const r = await fetch(url.toString(), { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      return NextResponse.json({ error: 'google_error', detail: t }, { status: r.status });
     }
-    
-    // Get agent calendar tokens
-    const tokens = await getAgentCalendarTokens(agent_id);
-    
-    if (!tokens || !tokens.access_token) {
-      return NextResponse.json(
-        { error: 'Agent calendar not connected' },
-        { status: 400 }
-      );
+    const j = await r.json();
+    const events = Array.isArray(j?.items) ? j.items : [];
+    const busy: Array<{ start: Date; end: Date }> = [];
+    for (const ev of events) {
+      const s = ev?.start?.dateTime || ev?.start?.date;
+      const e = ev?.end?.dateTime || ev?.end?.date;
+      if (!s || !e) continue;
+      busy.push({ start: new Date(s), end: new Date(e) });
     }
-    
-    // Parse date
-    const targetDate = new Date(date);
-    const year = targetDate.getFullYear();
-    const month = String(targetDate.getMonth() + 1).padStart(2, '0');
-    const day = String(targetDate.getDate()).padStart(2, '0');
-    
-    // Create time boundaries for the day
-    const dayStart = `${year}-${month}-${day}T${businessHours.start}:00`;
-    const dayEnd = `${year}-${month}-${day}T${businessHours.end}:00`;
-    
-    // Get calendars to check (use provided IDs or agent's calendars)
-    let calendarsToCheck = calendarIds;
-    if (!calendarsToCheck || calendarsToCheck.length === 0) {
-      // Use agent's primary calendar or all calendars
-      const agentCalendars = await getAgentCalendars(agent_id);
-      calendarsToCheck = agentCalendars.map(cal => cal.calendar_id);
-      
-      if (calendarsToCheck.length === 0 && tokens.calendar_id) {
-        calendarsToCheck = [tokens.calendar_id];
-      }
+
+    const slots: Array<{ start: string; end: string }> = [];
+    const workStart = 9, workEnd = 17;
+    for (let h = workStart; h < workEnd; h++) {
+      const s = new Date(date); s.setHours(h, 0, 0, 0);
+      const e = new Date(s.getTime() + slotMinutes * 60000);
+      const overlap = busy.some(b => s < b.end && e > b.start);
+      if (!overlap) slots.push({ start: s.toISOString(), end: e.toISOString() });
     }
-    
-    // Check availability for the entire day
-    const availability = await checkCalendarAvailability(
-      tokens.access_token,
-      dayStart,
-      dayEnd,
-      undefined,
-      calendarsToCheck
-    );
-    
-    // Generate available slots
-    const slots = [];
-    const slotMs = slotMinutes * 60 * 1000;
-    const startTime = new Date(dayStart);
-    const endTime = new Date(dayEnd);
-    
-    for (let time = startTime.getTime(); time < endTime.getTime() - slotMs; time += slotMs) {
-      const slotStart = new Date(time);
-      const slotEnd = new Date(time + slotMs);
-      
-      // Check if this slot overlaps with any busy period
-      const isBusy = availability.conflicts.some(conflict => {
-        const busyStart = new Date(conflict.start);
-        const busyEnd = new Date(conflict.end);
-        return (slotStart < busyEnd && slotEnd > busyStart);
-      });
-      
-      if (!isBusy) {
-        slots.push({
-          start: slotStart.toISOString(),
-          end: slotEnd.toISOString(),
-          available: true
-        });
-      }
-    }
-    
-    return NextResponse.json({
-      date,
-      slots,
-      businessHours,
-      slotMinutes,
-      totalAvailable: slots.length
-    });
-  } catch (error) {
-    console.error('Error getting agent calendar slots:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to get available slots' },
-      { status: 500 }
-    );
+    return NextResponse.json({ slots, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }

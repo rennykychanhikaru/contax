@@ -199,6 +199,61 @@ wss.on('connection', (ws) => {
             input_audio_format: 'g711_ulaw',
             // Enable automatic speech turns with a slightly longer silence window
             turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
+            tools: [
+              {
+                type: 'function',
+                name: 'checkAvailability',
+                description: 'Check if a specific start-end window is free on the connected calendar',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    start: { type: 'string' },
+                    end: { type: 'string' },
+                    organizationId: { type: 'string' },
+                    calendarId: { type: 'string' }
+                  },
+                  required: ['start','end']
+                }
+              },
+              {
+                type: 'function',
+                name: 'getAvailableSlots',
+                description: 'Get free slots for a given date on the connected calendar',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    date: { type: 'string' },
+                    slotMinutes: { type: 'number' }
+                  },
+                  required: ['date']
+                }
+              },
+              {
+                type: 'function',
+                name: 'bookAppointment',
+                description: 'Create a calendar event for the confirmed time',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    start: { type: 'string' },
+                    end: { type: 'string' },
+                    organizationId: { type: 'string' },
+                    calendarId: { type: 'string' },
+                    customer: {
+                      type: 'object',
+                      properties: {
+                        name: { type: 'string' },
+                        email: { type: 'string' },
+                        phone: { type: 'string' }
+                      },
+                      required: ['name']
+                    },
+                    notes: { type: 'string' }
+                  },
+                  required: ['start','end']
+                }
+              }
+            ],
             instructions: sessionInstructions
           }
         }))
@@ -265,17 +320,23 @@ wss.on('connection', (ws) => {
           if (msg?.type === 'response.function_call.arguments.delta' || msg?.type === 'response.function_call_arguments.delta') {
             const callId = msg.call_id || msg.id
             const delta = msg.delta || ''
-            if (callId && toolBuffers.has(callId)) {
-              toolBuffers.get(callId).args += delta
+            if (!callId) {
+              // cannot buffer without call id
+            } else {
+              const name = msg.name || (toolBuffers.get(callId)?.name ?? 'unknown')
+              const cur = toolBuffers.get(callId) || { name, args: '' }
+              cur.name = name
+              cur.args += delta
+              toolBuffers.set(callId, cur)
             }
           }
           const isArgsDone = (msg?.type === 'response.function_call.arguments.done' || msg?.type === 'response.function_call_arguments.done')
           if (isArgsDone || msg?.type === 'response.function_call.completed') {
             const callId = msg.call_id || msg.id
-            if (callId && toolBuffers.has(callId)) {
-              const buf = toolBuffers.get(callId)
+            if (callId) {
+              const buf = toolBuffers.get(callId) || { name: msg.name || 'unknown', args: msg.arguments || '' }
               const name = msg.name || buf.name || 'unknown'
-              const argsJson = msg.arguments || buf.args || ''
+              const argsJson = (typeof msg.arguments === 'string' ? msg.arguments : '') || buf.args || ''
               // Invoke our HTTP tool and provide results back to the model
               invokeToolAndRespond(rws, callId, name, argsJson, { orgId, agentId })
                 .catch((e) => console.warn('[tool.invoke.error]', e?.message))
@@ -565,15 +626,25 @@ async function invokeToolAndRespond(rws, callId, name, argsJson, ctx) {
       return
     }
 
-    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    // Fetch with timeout to avoid stalling the call
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 10000);
+    console.log('[tool.invoke]', effective, url)
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal })
+    clearTimeout(t)
     let payload = null
     try { payload = await res.json() } catch { payload = { ok: res.ok } }
     if (!res.ok) payload = { error: 'http_error', status: res.status, detail: payload }
+    console.log('[tool.result]', effective, res.status)
     await sendToolResult(rws, callId, payload)
     // Let the model speak based on tool output (no suppression)
     rws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } }))
   } catch (e) {
-    await sendToolResult(rws, callId, { error: (e && e.message) || 'tool_invoke_failed' })
+    const msg = (e && e.message) || 'tool_invoke_failed'
+    console.warn('[tool.invoke.error]', effective, msg)
+    await sendToolResult(rws, callId, { error: msg })
+    // Nudge the model to speak an error-friendly response
+    try { rws.send(JSON.stringify({ type: 'response.create', response: { modalities: ['audio','text'] } })) } catch (_) { /* ignore */ }
   }
 }
 

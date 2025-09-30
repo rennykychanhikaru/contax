@@ -294,7 +294,63 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       type: 'session.update',
       session: {
         turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
-        instructions: `${this.baseSystemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidanceConnect}`
+        instructions: `${this.baseSystemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidanceConnect}`,
+        tools: [
+          {
+            type: 'function',
+            name: 'checkAvailability',
+            description: 'Check if a specific start-end window is free on the connected calendar',
+            parameters: {
+              type: 'object',
+              properties: {
+                start: { type: 'string', description: 'RFC3339 start time with timezone' },
+                end: { type: 'string', description: 'RFC3339 end time with timezone' },
+                organizationId: { type: 'string' },
+                calendarId: { type: 'string' }
+              },
+              required: ['start', 'end']
+            }
+          },
+          {
+            type: 'function',
+            name: 'getAvailableSlots',
+            description: 'Get free slots for a given date on the connected calendar',
+            parameters: {
+              type: 'object',
+              properties: {
+                date: { type: 'string', description: 'Date in YYYY-MM-DD' },
+                slotMinutes: { type: 'number' },
+                businessHours: { type: 'boolean' },
+              },
+              required: ['date']
+            }
+          },
+          {
+            type: 'function',
+            name: 'bookAppointment',
+            description: 'Create a calendar event for the confirmed time',
+            parameters: {
+              type: 'object',
+              properties: {
+                start: { type: 'string', description: 'RFC3339 start time with timezone' },
+                end: { type: 'string', description: 'RFC3339 end time with timezone' },
+                organizationId: { type: 'string' },
+                calendarId: { type: 'string' },
+                customer: {
+                  type: 'object',
+                  properties: {
+                    name: { type: 'string' },
+                    email: { type: 'string' },
+                    phone: { type: 'string' }
+                  },
+                  required: ['name']
+                },
+                notes: { type: 'string' }
+              },
+              required: ['start', 'end']
+            }
+          }
+        ]
       }
     })
 
@@ -536,18 +592,12 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         const res = await (async () => {
           const agentId = this.defaultAgentId
           const apiUrl = agentId ? `/api/agents/${agentId}/calendar/check-availability` : '/api/calendar/check-availability'
-          const r = await fetch(apiUrl, {
+          const { ok, status, json } = await this.fetchJsonWithTimeout(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ organizationId, start: args.start, end: args.end, calendarId, calendarIds: this.calendarIds })
           })
-          try {
-            const j = await r.json()
-            return r.ok ? j : { error: 'http_error', status: r.status, detail: j }
-          } catch {
-            const t = await r.text().catch(() => '')
-            return { error: 'http_error', status: r.status, detail: t }
-          }
+          return ok ? json : { error: 'http_error', status, detail: json }
         })()
         this.onToolEvent?.({ kind: 'result', name: effective, result: res })
         
@@ -607,18 +657,12 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         const res = await (async () => {
           const agentId = this.defaultAgentId
           const apiUrl = agentId ? `/api/agents/${agentId}/appointments/book` : '/api/appointments/book'
-          const r = await fetch(apiUrl, {
+          const { ok, status, json } = await this.fetchJsonWithTimeout(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ organizationId, customer: args.customer, start: args.start, end: args.end, notes: args.notes, calendarId })
-          })
-          try {
-            const j = await r.json()
-            return r.ok ? j : { error: 'http_error', status: r.status, detail: j }
-          } catch {
-            const t = await r.text().catch(() => '')
-            return { error: 'http_error', status: r.status, detail: t }
-          }
+          }, 10000)
+          return ok ? json : { error: 'http_error', status, detail: json }
         })()
         this.onToolEvent?.({ kind: 'result', name: effective, result: res })
         
@@ -632,19 +676,30 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
             const s = res?.start || args.start
             const e = res?.end || args.end
             spokenResponse = `Perfect! I've booked ${this.fmtRange(s, e, tz)} for you. It's now on your calendar.`
+          } else if (res?.success && res?.event) {
+            // Handle generic booking shape { success: true, event: {...} }
+            const tz = res?.timeZone
+            const s = res?.start || args.start || res?.event?.start
+            const e = res?.end || args.end || res?.event?.end
+            if (s && e) {
+              spokenResponse = `Great news — your meeting (${this.fmtRange(s, e, tz)}) is booked. I've added it to the calendar.`
+            } else {
+              spokenResponse = 'Great news — your meeting is booked. I have added it to the calendar.'
+            }
+          } else if (res?.error) {
+            // Provide a concise error message to avoid silence when suppressed
+            spokenResponse = 'I could not book that appointment just now. Would you like me to suggest another time?'
           }
         } catch { void 0; /* noop */ }
         
         await this.sendToolResult(callId, res, true)
-        if (spokenResponse) {
-          this.speak(spokenResponse)
-        }
+        this.speak(spokenResponse || 'Done. The appointment is booked and on your calendar.')
       } else if (effective === 'getAvailableSlots') {
         const organizationId = args.organizationId || this.defaultOrgId
         const res = await (async () => {
           const agentId = this.defaultAgentId
           const apiUrl = agentId ? `/api/agents/${agentId}/calendar/slots` : '/api/calendar/slots'
-          const r = await fetch(apiUrl, {
+          const { ok, status, json } = await this.fetchJsonWithTimeout(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -655,13 +710,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
               calendarIds: this.calendarIds
             })
           })
-          try {
-            const j = await r.json()
-            return r.ok ? j : { error: 'http_error', status: r.status, detail: j }
-          } catch {
-            const t = await r.text().catch(() => '')
-            return { error: 'http_error', status: r.status, detail: t }
-          }
+          return ok ? json : { error: 'http_error', status, detail: json }
         })()
         this.onToolEvent?.({ kind: 'result', name: effective, result: res })
         
@@ -753,6 +802,19 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       }
     } else {
       this.pendingMessages.push(msg)
+    }
+  }
+
+  private async fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs = 8000): Promise<{ ok: boolean; status: number; json: unknown }> {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), timeoutMs)
+    try {
+      const r = await fetch(url, { ...init, signal: ctrl.signal })
+      let j: unknown = null
+      try { j = await r.json() } catch { j = null }
+      return { ok: r.ok, status: r.status, json: j }
+    } finally {
+      clearTimeout(t)
     }
   }
 }

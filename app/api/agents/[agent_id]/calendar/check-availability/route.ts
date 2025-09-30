@@ -1,83 +1,53 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { cookies } from 'next/headers';
-import { createServerClient } from '@supabase/ssr';
-import { getAgentCalendarTokens, validateAgentAccess } from '@/lib/agent-calendar';
-import { checkCalendarAvailability } from '@/lib/google';
+import { getAgentCalendarTokens } from '@/lib/agent-calendar';
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ agent_id: string }> }
-) {
+async function getAgentAccessToken(agentId: string): Promise<string | null> {
+  const tokens = await getAgentCalendarTokens(agentId);
+  return tokens?.access_token || null;
+}
+
+export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: string }> }) {
   try {
-    const { agent_id } = await params;
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll();
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options);
-              });
-            } catch (error) {
-              console.error('Error setting cookies:', error);
-            }
-          },
-        },
-      }
-    );
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    
-    // Validate agent access
-    const agentAccess = await validateAgentAccess(agent_id, user.id);
-    if (!agentAccess) {
-      return NextResponse.json({ error: 'Agent not found or access denied' }, { status: 404 });
-    }
-    
+    const { agent_id } = await ctx.params;
     const body = await req.json();
-    const { start, end, calendarId, calendarIds } = body;
-    
+    const { start, end } = body as { start?: string; end?: string };
     if (!start || !end) {
-      return NextResponse.json(
-        { error: 'Start and end times are required' },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: 'Missing start/end' }, { status: 400 });
     }
-    
-    // Get agent calendar tokens
-    const tokens = await getAgentCalendarTokens(agent_id);
-    
-    if (!tokens || !tokens.access_token) {
-      return NextResponse.json(
-        { error: 'Agent calendar not connected' },
-        { status: 400 }
-      );
+
+    const accessToken = await getAgentAccessToken(agent_id);
+    if (!accessToken) {
+      return NextResponse.json({ error: 'calendar_not_connected' }, { status: 409 });
     }
-    
-    // Check availability using the agent's calendar
-    const availability = await checkCalendarAvailability(
-      tokens.access_token,
-      start,
-      end,
-      calendarId || tokens.calendar_id,
-      calendarIds
-    );
-    
-    return NextResponse.json(availability);
-  } catch (error) {
-    console.error('Error checking agent calendar availability:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to check availability' },
-      { status: 500 }
-    );
+
+    // Fetch events in window and detect overlap
+    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+    url.searchParams.append('timeMin', new Date(start).toISOString());
+    url.searchParams.append('timeMax', new Date(end).toISOString());
+    url.searchParams.append('singleEvents', 'true');
+    url.searchParams.append('orderBy', 'startTime');
+
+    const r = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      return NextResponse.json({ error: 'google_error', detail: t }, { status: r.status });
+    }
+    const j = await r.json();
+    const items = Array.isArray(j?.items) ? j.items as Array<{ start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }> : [];
+    const hasConflict = items.some((ev) => {
+      const s = ev?.start?.dateTime || ev?.start?.date;
+      const e = ev?.end?.dateTime || ev?.end?.date;
+      if (!s || !e) return false;
+      const S = new Date(s).getTime();
+      const E = new Date(e).getTime();
+      const A = new Date(start).getTime();
+      const B = new Date(end).getTime();
+      return A < E && B > S;
+    });
+    return NextResponse.json({ available: !hasConflict, start, end });
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 }
