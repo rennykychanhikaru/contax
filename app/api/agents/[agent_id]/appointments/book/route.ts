@@ -20,6 +20,20 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: 
     if (!accessToken) return NextResponse.json({ error: 'calendar_not_connected' }, { status: 409 });
 
     const summary = customer?.name ? `Consultation with ${customer.name}` : 'Consultation';
+
+    // Build a rich description that includes client and property details
+    const details: string[] = [];
+    if (customer?.name || customer?.email || customer?.phone) {
+      const parts: string[] = [];
+      if (customer?.name) parts.push(`Name: ${customer.name}`);
+      if (customer?.email) parts.push(`Email: ${customer.email}`);
+      if (customer?.phone) parts.push(`Phone: ${customer.phone}`);
+      details.push(parts.join(' | '));
+    }
+    if (notes && notes.trim()) {
+      details.push(`Property details: ${notes.trim()}`);
+    }
+    const description = details.join('\n');
     const event: {
       summary: string;
       description?: string;
@@ -29,14 +43,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: 
       attendees?: Array<{ email: string }>;
     } = {
       summary,
-      description: notes || undefined,
+      description: description || undefined,
       start: { dateTime: new Date(start).toISOString() },
       end: { dateTime: new Date(end).toISOString() },
       conferenceData: { createRequest: { requestId: `mtg-${Date.now()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } },
       attendees: customer?.email ? [{ email: customer.email }] : undefined,
     };
 
-    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1`;
+    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all`;
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },

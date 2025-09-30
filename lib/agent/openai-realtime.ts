@@ -454,7 +454,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         }, 900)
         // After first user transcript, arm tool usage with explicit guidance (once)
         if (!this.toolHintSent) {
-          const toolHint = `Use tools for scheduling. When the caller mentions a specific time, call checkAvailability with start at that exact local time and end=start+60 minutes (unless the user requested a different duration). Do not check a whole day when a specific time was requested. If checkAvailability shows conflicts, do not proceed to booking; propose the next free times. Format dates as RFC3339 with timezone (e.g., 2025-09-10T10:00:00-04:00). Default organizationId=${this.defaultOrgId || 'unknown'}, calendarId=${this.defaultCalendarId || 'primary'}.`
+          const toolHint = `Use tools for scheduling. When the caller mentions a specific time, call checkAvailability with start at that exact local time and end=start+60 minutes (unless the user requested a different duration). Do not check a whole day when a specific time was requested. If checkAvailability shows conflicts, do not proceed to booking; propose the next free times. When booking, include a concise property summary in the notes (e.g., bedrooms, key features, budget, timeline, any special requests). Format dates as RFC3339 with timezone (e.g., 2025-09-10T10:00:00-04:00). Default organizationId=${this.defaultOrgId || 'unknown'}, calendarId=${this.defaultCalendarId || 'primary'}.`
           this.sendOAI({
             type: 'response.create',
             response: { instructions: toolHint, tool_choice: 'auto', modalities: ['audio', 'text'] }
