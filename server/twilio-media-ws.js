@@ -133,6 +133,9 @@ wss.on('connection', (ws) => {
   let greetConsentRequired = false
   // Track tool calls by call_id
   const toolBuffers = new Map()
+  // Track current response for audio fallback
+  let curHasAudio = false
+  let curTranscript = ''
 
   // --- OpenAI Realtime state ---
   let oai = { ws: /** @type {import('ws')} */ (null), ready: false, appendPending: 0, lastCommitTs: 0 }
@@ -195,13 +198,13 @@ wss.on('connection', (ws) => {
             output_audio_format: 'pcm16',
             input_audio_format: 'g711_ulaw',
             // Enable automatic speech turns with a slightly longer silence window
-            turn_detection: { type: 'server_vad', silence_duration_ms: 1000, prefix_ms: 200 },
+            turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
             instructions: sessionInstructions
           }
         }))
         console.log('[oai.open] realtime connected')
       })
-      rws.on('message', (raw) => {
+      rws.on('message', async (raw) => {
         try {
           const msg = JSON.parse(raw.toString('utf-8'))
           if (msg?.type) {
@@ -221,6 +224,10 @@ wss.on('connection', (ws) => {
           }
           if (msg?.type === 'response.completed' || msg?.type === 'response.audio.done' || msg?.type === 'response.done') {
             agentSpeakingNow = false
+          }
+          if (msg?.type === 'response.created') {
+            curHasAudio = false
+            curTranscript = ''
           }
           // If still waiting for consent, cancel any assistant output turn immediately
           if ((msg?.type === 'response.created' || msg?.type === 'response.started') && waitingForUser) {
@@ -301,7 +308,7 @@ wss.on('connection', (ws) => {
           }
           // Handle audio deltas: downsample, encode, and forward
           if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
-            console.time('audio_processing');
+            curHasAudio = true
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
             const pcm24k = new Int16Array(Buffer.from(b64, 'base64').buffer)
@@ -310,12 +317,42 @@ wss.on('connection', (ws) => {
             for (let i = 0; i < mu.length; i += 160) {
               enqueueMu(mu.subarray(i, i + 160))
             }
-            console.timeEnd('audio_processing');
           }
+          if (msg?.type === 'response.audio_transcript.delta') {
+            const d = (msg.delta || '').toString()
+            curTranscript += d
+          }
+          // Let server VAD create responses; avoid double-create (active response error)
           // Mark greeting as complete on first completed response
           if (!greetingDone && (msg?.type === 'response.completed' || msg?.type === 'response.audio.done' || msg?.type === 'response.done')) {
             greetingDone = true
+            // Do not enable a post-greeting wait gate; allow immediate conversation
+            waitingForUser = false
+            greetConsentRequired = false
             console.log('[oai.greeting.completed]')
+          }
+          if (msg?.type === 'response.done') {
+            // Fallback if no audio deltas arrived: synthesize transcript
+            if (!curHasAudio && curTranscript.trim() && OAI_KEY) {
+              try {
+                const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
+                  method: 'POST',
+                  headers: { Authorization: `Bearer ${OAI_KEY}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: normalizeVoiceId(selectedVoice) || 'sage', input: curTranscript, format: 'wav' })
+                })
+                if (ttsRes.ok) {
+                  const buf = await ttsRes.arrayBuffer()
+                  const view = new DataView(buf)
+                  let dataOffset = 44
+                  for (let i = 12; i < 44; i++) { if (view.getUint32(i, false) === 0x64617461) { dataOffset = i + 8; break } }
+                  const sampleRate = view.getUint32(24, true)
+                  const bytes = new Uint8Array(buf, dataOffset)
+                  const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2))
+                  const pcm8k = sampleRate === 8000 ? pcm16 : downsample16kTo8k(pcm16)
+                  for (let i = 0; i < pcm8k.length; i += 160) enqueueMu(encodePcm16ToMuLaw(pcm8k.subarray(i, i + 160)))
+                }
+              } catch (_) { /* ignore */ }
+            }
           }
           if (msg?.type === 'error' || msg?.error) {
             console.warn('[oai.msg.error]', msg?.error || msg)

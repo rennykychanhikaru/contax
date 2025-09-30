@@ -36,11 +36,14 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private fallbackTimer: NodeJS.Timeout | null = null
   private lastTranscript: string = ''
   private tz: string | undefined
+  private vadDebounce: NodeJS.Timeout | null = null
   // Turn-taking and gating controls
   private waitingForUser: boolean = false
   private agentSpeaking: boolean = false
   private repromptTimer: NodeJS.Timeout | null = null
   private consentRequired: boolean = false
+  private greetingInProgress: boolean = false
+  private baseSystemPrompt: string | undefined
 
   constructor(opts?: {
     onTranscript?: (text: string) => void
@@ -134,8 +137,8 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     this.sendOAI({
       type: 'session.update',
       session: {
-        turn_detection: { type: 'server_vad', silence_duration_ms: 1000, prefix_ms: 200 },
-        instructions: `${systemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidance}`
+        turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
+        instructions: `${this.baseSystemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidance}`
       }
     })
   }
@@ -214,6 +217,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     systemPrompt: string,
     opts?: { organizationId?: string; agentId?: string; calendarId?: string; greeting?: string; language?: string; timeZone?: string }
   ): Promise<void> {
+    this.baseSystemPrompt = systemPrompt
     const session = await fetch('/api/realtime/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -277,10 +281,28 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     const answer = { type: 'answer', sdp: await sdpResponse.text() } as RTCSessionDescriptionInit
     await pc.setRemoteDescription(answer)
 
-    // Speak the explicit greeting first (if provided), then wait for explicit consent
+    // Configure server VAD and instructions so transcripts flow
+    const patienceGuidanceConnect = (
+      'Turn-taking rules:\n' +
+      '- Wait about 0.8–1.2 seconds after the caller finishes before replying.\n' +
+      "- Do not assume consent. Never proceed unless the caller explicitly responds (e.g., 'yes' or a relevant answer).\n" +
+      '- Treat background noise or one-syllable utterances as unclear; ask a brief clarification instead of assuming yes.\n' +
+      '- If the caller starts speaking while you are speaking, immediately stop and let them finish (barge-in).\n' +
+      '- After greeting, do not ask the next question until the caller responds.'
+    )
+    this.sendOAI({
+      type: 'session.update',
+      session: {
+        turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
+        instructions: `${this.baseSystemPrompt || 'You are a helpful scheduling assistant.'}\n\n${patienceGuidanceConnect}`
+      }
+    })
+
+    // Speak the explicit greeting first (if provided)
     if (opts?.greeting) {
       const safe = opts.greeting.replace(/"/g, '\\"')
-      const greetOnly = `Say exactly: "${safe}". Then stop speaking and wait for the caller to respond.`
+      const greetOnly = `Say exactly: "${safe}".`
+      this.greetingInProgress = true
       this.sendOAI({
         type: 'response.create',
         response: {
@@ -288,9 +310,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           modalities: ['audio', 'text']
         }
       })
-      // After greeting, require explicit affirmative consent before proceeding
-      this.waitingForUser = true
-      this.consentRequired = true
+      // Do not gate after greeting; allow immediate conversation
+      this.waitingForUser = false
+      this.consentRequired = false
     }
   }
 
@@ -334,9 +356,15 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       }
       if (msg.type === 'response.completed' || msg.type === 'response.audio.done' || msg.type === 'response.done') {
         this.agentSpeaking = false
+        if (this.greetingInProgress) {
+          this.greetingInProgress = false
+          // Do not enable a post-greeting gate; allow immediate conversation
+          this.waitingForUser = false
+          this.consentRequired = false
+        }
       }
-      // If still waiting for consent, cancel assistant responses immediately
-      if ((msg.type === 'response.created' || msg.type === 'response.started') && this.waitingForUser) {
+      // If still waiting for consent, cancel assistant responses immediately (but not during greeting)
+      if ((msg.type === 'response.created' || msg.type === 'response.started') && this.waitingForUser && !this.greetingInProgress) {
         this.sendOAI({ type: 'response.cancel' })
       }
 
@@ -346,7 +374,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         this.lastTranscript = ttext
         if (this.onTranscript) this.onTranscript(ttext)
         const cleaned = ttext.replace(/\s+/g, ' ').trim()
-        const meaningful = /\b(yes|yeah|yep|sure|okay|ok|no|not|busy|later|schedule|appointment|property|budget|name|email|phone)\b/i.test(cleaned) || cleaned.length >= 8
+        const meaningful = /\b(yes|yeah|yep|sure|okay|ok|no|not|busy|later|schedule|appointment|property|budget|name|email|phone)\b/i.test(cleaned) || cleaned.length >= 2
 
         // Barge-in: if user starts speaking, stop the agent immediately
         if (this.agentSpeaking && cleaned.length) {
@@ -354,22 +382,20 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
           this.agentSpeaking = false
         }
 
-        // Clear waiting gate only with consent or meaningful speech
-        if (this.waitingForUser) {
-          const affirmative = /\b(yes|yeah|yep|sure|okay|ok|sounds good|that works)\b/i.test(cleaned)
-          if (this.consentRequired) {
-            if (affirmative) {
-              this.waitingForUser = false
-              this.consentRequired = false
-              if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
-            } else {
-              // keep waiting
-            }
-          } else if (meaningful) {
-            this.waitingForUser = false
-            if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
-          }
+        // Clear waiting gate as soon as caller speaks meaningfully (no explicit yes required)
+        if (this.waitingForUser && meaningful) {
+          this.waitingForUser = false
+          this.consentRequired = false
+          if (this.repromptTimer) { clearTimeout(this.repromptTimer); this.repromptTimer = null }
         }
+
+        // Debounced VAD: after ~900ms of no transcript, request an audio response if not awaiting a tool
+        if (this.vadDebounce) clearTimeout(this.vadDebounce)
+        this.vadDebounce = setTimeout(() => {
+          if (!this.awaitingTool && !this.agentSpeaking) {
+            this.sendOAI({ type: 'response.create', response: { modalities: ['audio', 'text'] } })
+          }
+        }, 900)
         // After first user transcript, arm tool usage with explicit guidance (once)
         if (!this.toolHintSent) {
           const toolHint = `Use tools for scheduling. When the caller mentions a specific time, call checkAvailability with start at that exact local time and end=start+60 minutes (unless the user requested a different duration). Do not check a whole day when a specific time was requested. If checkAvailability shows conflicts, do not proceed to booking; propose the next free times. Format dates as RFC3339 with timezone (e.g., 2025-09-10T10:00:00-04:00). Default organizationId=${this.defaultOrgId || 'unknown'}, calendarId=${this.defaultCalendarId || 'primary'}.`
