@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAgentCalendarTokens } from '@/lib/agent-calendar';
 
-async function getAgentAccessToken(agentId: string): Promise<string | null> {
-  const tokens = await getAgentCalendarTokens(agentId);
-  return tokens?.access_token || null;
-}
-
 export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: string }> }) {
   try {
     const { agent_id } = await ctx.params;
@@ -15,13 +10,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: 
       return NextResponse.json({ error: 'Missing start/end' }, { status: 400 });
     }
 
-    const accessToken = await getAgentAccessToken(agent_id);
+    const tokens = await getAgentCalendarTokens(agent_id);
+    const accessToken = tokens?.access_token || null;
     if (!accessToken) {
       return NextResponse.json({ error: 'calendar_not_connected' }, { status: 409 });
     }
+    const calendarId = tokens?.calendar_id || 'primary';
 
     // Fetch events in window and detect overlap
-    const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+    const url = new URL(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`);
     url.searchParams.append('timeMin', new Date(start).toISOString());
     url.searchParams.append('timeMax', new Date(end).toISOString());
     url.searchParams.append('singleEvents', 'true');
@@ -34,16 +31,36 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ agent_id: 
       const t = await r.text().catch(() => '');
       return NextResponse.json({ error: 'google_error', detail: t }, { status: r.status });
     }
-    const j = await r.json();
-    const items = Array.isArray(j?.items) ? j.items as Array<{ start?: { dateTime?: string; date?: string }; end?: { dateTime?: string; date?: string } }> : [];
-    const hasConflict = items.some((ev) => {
-      const s = ev?.start?.dateTime || ev?.start?.date;
-      const e = ev?.end?.dateTime || ev?.end?.date;
-      if (!s || !e) return false;
-      const S = new Date(s).getTime();
-      const E = new Date(e).getTime();
-      const A = new Date(start).getTime();
-      const B = new Date(end).getTime();
+    type GEvent = {
+      start?: { dateTime?: string; date?: string };
+      end?: { dateTime?: string; date?: string };
+      status?: string;
+      transparency?: string;
+      eventType?: string;
+    };
+    const items: GEvent[] = Array.isArray((await r.clone().json())?.items)
+      ? ((await r.json()) as { items: GEvent[] }).items
+      : ((await r.json())?.items ?? []);
+
+    const relevant = (items || []).filter((ev) => {
+      const status = (ev.status || 'confirmed').toLowerCase();
+      const trans = (ev.transparency || 'opaque').toLowerCase();
+      const type = (ev.eventType || '').toLowerCase();
+      // Ignore non-blocking events
+      if (status !== 'confirmed') return false;
+      if (trans === 'transparent') return false;
+      if (type === 'workinglocation' || type === 'working_location' || type === 'focustime' || type === 'focus_time') return false;
+      return true;
+    });
+
+    const A = new Date(start).getTime();
+    const B = new Date(end).getTime();
+    const hasConflict = relevant.some((ev) => {
+      const sRaw = ev?.start?.dateTime || ev?.start?.date;
+      const eRaw = ev?.end?.dateTime || ev?.end?.date;
+      if (!sRaw || !eRaw) return false;
+      const S = new Date(sRaw).getTime();
+      const E = new Date(eRaw).getTime();
       return A < E && B > S;
     });
     return NextResponse.json({ available: !hasConflict, start, end });
