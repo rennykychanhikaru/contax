@@ -195,7 +195,7 @@ wss.on('connection', (ws) => {
             output_audio_format: 'pcm16',
             input_audio_format: 'g711_ulaw',
             // Enable automatic speech turns with a slightly longer silence window
-            turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
+            turn_detection: { type: 'server_vad', silence_duration_ms: 1000, prefix_ms: 200 },
             instructions: sessionInstructions
           }
         }))
