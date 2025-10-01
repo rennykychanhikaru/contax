@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createBrowserClient } from '@supabase/ssr';
 import pathsConfig from '../../../config/paths.config';
@@ -17,6 +17,59 @@ export default function SignInPage() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
+
+  // Parse hash fragment for magic link tokens and set session client-side
+  useEffect(() => {
+    const hash = typeof window !== 'undefined' ? window.location.hash : '';
+    if (!hash || !hash.includes('access_token')) return;
+
+    const params = new URLSearchParams(hash.replace(/^#/, ''));
+    const accessToken = params.get('access_token');
+    const refreshToken = params.get('refresh_token');
+
+    if (!accessToken || !refreshToken) return;
+
+    // Attempt to set the session using tokens from magic link
+    (async () => {
+      try {
+        setLoading(true);
+        setError(null);
+        const { error: setErr } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        if (setErr) {
+          setError(setErr.message);
+          setLoading(false);
+          return;
+        }
+
+        // After setting session, check onboarding status (organization membership)
+        const { data: sessionUser } = await supabase.auth.getUser();
+        const userId = sessionUser.user?.id;
+        if (!userId) {
+          setLoading(false);
+          return router.push(pathsConfig.auth.signIn);
+        }
+
+        const { data: membership } = await supabase
+          .from('organization_members')
+          .select('organization_id')
+          .eq('user_id', userId)
+          .single();
+
+        setLoading(false);
+        if (!membership) {
+          router.replace('/onboarding');
+        } else {
+          router.replace(pathsConfig.app.home);
+        }
+      } catch (e) {
+        setLoading(false);
+        setError('Failed to complete sign-in from magic link');
+      }
+    })();
+  }, [router, supabase]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();

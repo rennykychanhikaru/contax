@@ -2,14 +2,28 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
+import { checkRateLimit, RateLimitPresets } from '@/lib/security/rate-limiter';
+
+const ROLE_VALUES = new Set(['owner', 'admin', 'member']);
+
+function parsePagination(req: NextRequest): { page: number; perPage: number; from: number; to: number } {
+  const url = new URL(req.url);
+  const page = Math.max(1, Math.min(1000000, Number(url.searchParams.get('page') || '1')));
+  const perPageRaw = Number(url.searchParams.get('perPage') || '25');
+  const perPage = Math.max(1, Math.min(100, perPageRaw || 25));
+  const from = (page - 1) * perPage;
+  const to = from + perPage - 1;
+  return { page, perPage, from, to };
+}
 
 // GET: list members
 // POST: invite member by email
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const { from, to } = parsePagination(req);
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         getAll() {
@@ -51,7 +65,8 @@ export async function GET() {
     .from('organization_members')
     .select('id, user_id, role, created_at, updated_at')
     .eq('organization_id', membership.organization_id)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .range(from, to);
   if (listErr) return NextResponse.json({ error: listErr.message }, { status: 500 });
 
   const enriched = await Promise.all(
@@ -77,16 +92,28 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  // Rate limit invites
+  const rl = checkRateLimit(req as unknown as Request, RateLimitPresets.strict);
+  if (!rl.allowed) {
+    return NextResponse.json({ error: rl.error || 'Too many requests' }, { status: 429 });
+  }
+
   const { email, role } = await req.json();
   if (!email || typeof email !== 'string') {
     return NextResponse.json({ error: 'Email is required' }, { status: 400 });
   }
-  const inviteRole = (role as string) || 'member';
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const basicEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!basicEmail.test(normalizedEmail)) {
+    return NextResponse.json({ error: 'Invalid email' }, { status: 400 });
+  }
+  const inviteRoleRaw = typeof role === 'string' ? role.trim().toLowerCase() : 'member';
+  const inviteRole = ROLE_VALUES.has(inviteRoleRaw) ? inviteRoleRaw : 'member';
 
   const cookieStore = await cookies();
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
         getAll() {
@@ -118,26 +145,74 @@ export async function POST(req: NextRequest) {
   if (!me) return NextResponse.json({ error: 'No organization found' }, { status: 404 });
   const isAdmin = me.role === 'owner' || me.role === 'admin';
   if (!isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  // Only owners can assign owner role
+  if (inviteRole === 'owner' && me.role !== 'owner') {
+    return NextResponse.json({ error: 'Only owners can assign owner role' }, { status: 403 });
+  }
 
   const admin = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-  // Invite or fetch existing user
+  // Build redirect to callback
+  const url = new URL(req.url);
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || `${url.protocol}//${url.host}`;
+  const redirectTo = `${baseUrl}/auth/callback`;
+
+  // Helper to extract action_link from Supabase response
+  const extractActionLink = (data: unknown): string | null => {
+    if (data && typeof data === 'object') {
+      const d = data as Record<string, unknown>;
+      const direct = d['action_link'];
+      if (typeof direct === 'string') return direct;
+      const props = d['properties'];
+      if (props && typeof props === 'object') {
+        const action = (props as Record<string, unknown>)['action_link'];
+        if (typeof action === 'string') return action;
+      }
+    }
+    return null;
+  };
+
+  // Try to generate an invite link (creates user if not exists, no email send)
+  let mode: 'invite' | 'magiclink' | 'added' = 'invite';
+  let link: string | null = null;
   let targetUserId: string | null = null;
   try {
-    const inviteRes = await admin.auth.admin.inviteUserByEmail(email);
-    targetUserId = inviteRes.data.user?.id ?? null;
-  } catch (e: unknown) {
-    // If invite fails (e.g., user exists), try to find user via listUsers
+    const { data } = await admin.auth.admin.generateLink({
+      type: 'invite',
+      email: normalizedEmail,
+      options: { redirectTo },
+    });
+    targetUserId = data.user?.id ?? null;
+    link = extractActionLink(data);
+    mode = 'invite';
+  } catch (err: unknown) {
+    // If user already exists, generate a magic link instead
     try {
-      // Fallback search: iterate minimal pages (small orgs)
-      const pageRes = await admin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-      const found = pageRes.data.users?.find((u) => u.email?.toLowerCase() === email.toLowerCase());
+      const { data } = await admin.auth.admin.generateLink({
+        type: 'magiclink',
+        email: normalizedEmail,
+        options: { redirectTo },
+      });
+      targetUserId = data.user?.id ?? null;
+      link = extractActionLink(data);
+      mode = 'magiclink';
+    } catch (err2: unknown) {
+      console.error('Error generating invite/magic link', err, err2);
+    }
+  }
+
+  // As a last resort, attempt to look up user to add membership
+  if (!targetUserId) {
+    try {
+      const pageRes = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      const found = pageRes.data.users?.find((u) => u.email?.toLowerCase() === normalizedEmail);
       targetUserId = found?.id ?? null;
-    } catch (err: unknown) {
-      console.error('Error listing users as fallback', err);
+      mode = 'added';
+    } catch (err3: unknown) {
+      console.error('Error listing users as fallback', err3);
     }
   }
 
@@ -158,5 +233,30 @@ export async function POST(req: NextRequest) {
     );
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  return NextResponse.json({ success: true });
+  // If we still don't have a link (e.g., added existing user), generate magic link now
+  if (!link) {
+    try {
+      const { data } = await admin.auth.admin.generateLink({
+        type: 'magiclink',
+        email: normalizedEmail,
+        options: { redirectTo },
+      });
+      link = extractActionLink(data);
+      if (!mode) mode = 'magiclink';
+    } catch (err4: unknown) {
+      console.error('Error generating fallback magic link', err4);
+    }
+  }
+
+  // Audit log
+  await admin.from('audit_logs').insert({
+    organization_id: me.organization_id,
+    user_id: user.id,
+    action: 'invite',
+    resource_type: 'organization_member',
+    resource_id: targetUserId,
+    changes: { email: normalizedEmail, role: inviteRole, mode },
+  });
+
+  return NextResponse.json({ success: true, mode, link, emailed: false });
 }

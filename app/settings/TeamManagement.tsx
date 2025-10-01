@@ -5,6 +5,7 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Copy } from 'lucide-react';
 
 type Member = {
   id: string;
@@ -28,6 +29,8 @@ export default function TeamManagement() {
   const [inviting, setInviting] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('member');
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [inviteMode, setInviteMode] = useState<'invite' | 'magiclink' | 'added' | null>(null);
 
   const sortedMembers = useMemo(() => {
     const order = { owner: 0, admin: 1, member: 2 } as Record<string, number>;
@@ -62,14 +65,16 @@ export default function TeamManagement() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
       });
-      if (!res.ok) {
-        const j: { error?: string } = await res
-          .json()
-          .catch(() => ({ error: undefined } as { error?: string }));
+      const j: { error?: string; success?: boolean; link?: string | null; mode?: 'invite' | 'magiclink' | 'added' } = await res
+        .json()
+        .catch(() => ({} as { error?: string }));
+      if (!res.ok || !j.success) {
         throw new Error(j.error || 'Failed to invite');
       }
       setInviteEmail('');
       setInviteRole('member');
+      setInviteLink(j.link ?? null);
+      setInviteMode(j.mode ?? null);
       await load();
     } catch (e: unknown) {
       console.error(e);
@@ -147,6 +152,37 @@ export default function TeamManagement() {
             </Button>
           </div>
         </div>
+        {inviteLink && (
+          <div className="mt-4 space-y-2">
+            <div className="text-sm text-gray-300">
+              {inviteMode === 'invite' && 'Share this invitation link with the user:'}
+              {inviteMode === 'magiclink' && 'Share this sign-in link with the user:'}
+              {inviteMode === 'added' && 'User added. Share this link to sign in:'}
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={inviteLink}
+                className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-300 font-mono"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(inviteLink);
+                  } catch (err) {
+                    console.error('clipboard error', err);
+                  }
+                }}
+                title="Copy to clipboard"
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Members list */}
