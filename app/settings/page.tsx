@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';
 import { redirect } from 'next/navigation';
 import CalendarSettings from './CalendarSettings';
+import TeamManagement from './TeamManagement';
 import Header from '../../components/Header';
 
 export default async function SettingsPage() {
@@ -33,6 +34,20 @@ export default async function SettingsPage() {
     redirect('/auth/sign-in');
   }
 
+  // Fetch current user's role in their organization
+  const { data: membership } = await supabase
+    .from('organization_members')
+    .select('role')
+    .eq('user_id', user.id)
+    .single();
+
+  // Only owners/admins can access the settings page
+  const role = membership?.role ?? null;
+  const isAdmin = role === 'owner' || role === 'admin';
+  if (!isAdmin) {
+    redirect('/');
+  }
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -48,6 +63,10 @@ export default async function SettingsPage() {
             <CalendarSettings userId={user.id} />
 
             {/* Twilio integration moved to per-agent settings. */}
+            <section className="bg-gray-900/50 p-6 rounded-lg border border-gray-800">
+              <h3 className="text-lg font-semibold mb-4 text-white">Team Management</h3>
+              <TeamManagement />
+            </section>
           </div>
         </div>
       </main>
