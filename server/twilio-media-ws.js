@@ -18,6 +18,7 @@ const http = require('http')
 const fs = require('fs')
 const path = require('path')
 const WebSocket = require('ws')
+const crypto = require('crypto')
 
 // --- Load env from .env.local then .env if not already set (Next.js dev style) ---
 function loadDotEnvIfPresent(file) {
@@ -106,6 +107,7 @@ async function getSupabase() {
 }
 
 const OAI_KEY = process.env.OPENAI_API_KEY
+const STREAM_AUTH_SECRET = process.env.STREAM_AUTH_SECRET || ''
 if (!OAI_KEY) {
   console.warn('[warn] OPENAI_API_KEY not set; OpenAI TTS greeting will be skipped')
 }
@@ -513,7 +515,27 @@ wss.on('connection', (ws) => {
         orgId = params['organizationId']
         agentId = params['agentId']
         selectedVoice = params['voice'] || 'sage'
+        const streamToken = params['auth'] || ''
         console.log('[twilio.stream.start]', { callSid, streamSid, orgId, agentId, voice: selectedVoice })
+
+        // Verify signed short-lived token if STREAM_AUTH_SECRET is set
+        try {
+          if (STREAM_AUTH_SECRET) {
+            if (!streamToken.includes('.')) throw new Error('missing or malformed token')
+            const [payloadB64, sigB64] = streamToken.split('.')
+            const expected = hmacSha256B64Url(STREAM_AUTH_SECRET, payloadB64)
+            if (sigB64 !== expected) throw new Error('bad signature')
+            const info = JSON.parse(Buffer.from(b64UrlToB64(payloadB64), 'base64').toString('utf8')) || {}
+            if (!info.exp || info.exp < Math.floor(Date.now() / 1000)) throw new Error('expired token')
+            // Optionally warn on mismatched identifiers
+            if ((info.organizationId || '') !== (orgId || '')) console.warn('[auth.warn] orgId mismatch')
+            if ((info.agentId || '') !== (agentId || '')) console.warn('[auth.warn] agentId mismatch')
+          }
+        } catch (e) {
+          console.warn('[auth.reject]', e?.message)
+          try { ws.close(1008, 'auth failed') } catch (_) {}
+          return
+        }
 
         // Fetch agent greeting, language, prompt, and voice
         let greeting = 'Hello! How can I help you today?'
@@ -579,6 +601,9 @@ wss.on('connection', (ws) => {
       if (msg.event === 'media') {
         if (!greetingDone) return
         try {
+          // Guard base64 payload size/shape to avoid abuse
+          if (!msg?.media || typeof msg.media.payload !== 'string') return
+          if (msg.media.payload.length > 4096) { console.warn('[media.warn] payload too large'); return }
           if (!oai.ready) return
           // Twilio payload is μ-law 8k base64
           appendCallerMuLawBase64ToOAI(msg.media.payload)
@@ -605,6 +630,18 @@ wss.on('connection', (ws) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[twilio-ws] listening on 0.0.0.0:${PORT}`)
 })
+
+// --- Auth helpers ---
+function b64ToB64Url(b64) {
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+function b64UrlToB64(b64url) {
+  return (b64url || '').replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((b64url.length + 3) % 4)
+}
+function hmacSha256B64Url(secret, data) {
+  const h = crypto.createHmac('sha256', secret).update(data).digest('base64')
+  return b64ToB64Url(h)
+}
 
 // --- Tool invocation helpers ---
 function normalizeVoiceId(voice) {

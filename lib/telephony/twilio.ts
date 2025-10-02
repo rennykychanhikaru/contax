@@ -1,5 +1,6 @@
 import type { TelephonyAdapter } from '../adapters/types'
 import twilio from 'twilio'
+import crypto from 'crypto'
 
 export interface TwilioConfig {
   accountSid: string
@@ -52,6 +53,21 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       ? `${extWsBase.replace(/\/$/, '')}/twilio-media`
       : `wss://${new URL(baseUrl).host}/api/twilio/media-stream`
     const voice = options?.voice || 'sage'
+    // Auth token for stream protection (5 min TTL)
+    const authSecret = process.env.STREAM_AUTH_SECRET || ''
+    const now = Math.floor(Date.now() / 1000)
+    const tokenPayload = {
+      organizationId: options?.organizationId || '',
+      agentId: options?.agentId || 'default',
+      iat: now,
+      exp: now + 5 * 60,
+      nonce: crypto.randomBytes(8).toString('hex'),
+    }
+    const toB64Url = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const payloadJson = JSON.stringify(tokenPayload)
+    const payloadB64 = toB64Url(Buffer.from(payloadJson, 'utf8'))
+    const sig = authSecret ? toB64Url(crypto.createHmac('sha256', authSecret).update(payloadB64).digest()) : ''
+    const authToken = `${payloadB64}.${sig}`
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -59,6 +75,7 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       <Parameter name="organizationId" value="${options?.organizationId || ''}" />
       <Parameter name="agentId" value="${options?.agentId || 'default'}" />
       <Parameter name="direction" value="outbound" />
+      <Parameter name="auth" value="${authToken}" />
       <Parameter name="voice" value="${voice}" />
     </Stream>
   </Connect>

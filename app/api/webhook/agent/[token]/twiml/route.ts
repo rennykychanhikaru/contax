@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import twilio from 'twilio';
+import crypto from 'crypto';
 
 export async function POST(
   req: NextRequest,
@@ -39,9 +40,28 @@ export async function POST(
     const wsUrl = explicitWss ? `${explicitWss.replace(/\/$/, '')}/twilio-media` : `wss://${new URL(baseUrl).host}/api/twilio/media-stream`;
     const connect = response.connect();
     const stream = connect.stream({ url: wsUrl });
+    // Create short-lived auth token to protect media stream from abuse
+    const authSecret = process.env.STREAM_AUTH_SECRET || '';
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      organizationId: agent.organization_id || '',
+      agentId: agent.id,
+      iat: now,
+      exp: now + 5 * 60, // 5 minutes
+      nonce: crypto.randomBytes(8).toString('hex'),
+    };
+    const payloadJson = JSON.stringify(payload);
+    // Base64url helpers
+    const toB64Url = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    const payloadB64 = toB64Url(Buffer.from(payloadJson, 'utf8'));
+    const sig = authSecret
+      ? toB64Url(crypto.createHmac('sha256', authSecret).update(payloadB64).digest())
+      : '';
+    const authToken = `${payloadB64}.${sig}`;
     stream.parameter({ name: 'organizationId', value: agent.organization_id || '' });
     stream.parameter({ name: 'agentId', value: agent.id });
     stream.parameter({ name: 'direction', value: 'outbound' });
+    stream.parameter({ name: 'auth', value: authToken });
     // Allow voice to be overridden in the future; default to 'sage' for now
     stream.parameter({ name: 'voice', value: (agent as { voice?: string }).voice || 'sage' });
     // Fallback: if Stream handshake fails, Twilio should continue to next verb.

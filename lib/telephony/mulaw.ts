@@ -9,6 +9,8 @@
 // Constants for µ-law
 const BIAS = 0x84;
 const CLIP = 32635;
+export const MU_LAW_FRAME_SAMPLES_8K_20MS = 160; // 20ms frame @ 8kHz
+export const MU_LAW_SILENCE_20MS = new Uint8Array(MU_LAW_FRAME_SAMPLES_8K_20MS).fill(0xff);
 
 // PCM16 (Int16) -> µ-law (byte)
 export function pcm16ToMuLaw(sample: number): number {
@@ -72,4 +74,3 @@ export function upsample8kTo16k(pcm8k: Int16Array): Int16Array {
   out[out.length - 1] = last;
   return out;
 }
-
