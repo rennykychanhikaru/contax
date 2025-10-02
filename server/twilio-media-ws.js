@@ -57,6 +57,10 @@ function sendTwilioAudio(ws, streamSid, muLawBytes) {
   ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }))
 }
 
+function sendTwilioAudioB64(ws, streamSid, payloadB64) {
+  ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: payloadB64 } }))
+}
+
 // --- Server setup ---
 const PORT = parseInt(process.env.TWILIO_WS_PORT || '8787', 10)
 const server = http.createServer()
@@ -145,7 +149,9 @@ wss.on('connection', (ws) => {
   let txFrames = 0
   let lastTxLog = Date.now()
   let startedPacing = false
-  const PREBUFFER_FRAMES = 2 // ~40ms prebuffer for smoother starts
+  const PREBUFFER_FRAMES = 5 // ~100ms prebuffer for smoother starts
+  const SILENCE_160 = new Uint8Array(160).fill(0xff) // μ-law silence frame
+  let carryMu = new Uint8Array(0) // carry leftover μ-law bytes between deltas
   const sendTicker = setInterval(() => {
     if (!streamSid) return
     // Wait until we have a small prebuffer to avoid initial choppiness
@@ -153,8 +159,14 @@ wss.on('connection', (ws) => {
       if (outboundQueue.length >= PREBUFFER_FRAMES) startedPacing = true
       else return
     }
+    // If passthrough mode is active, do not pace — deltas are forwarded immediately
+    if (oaiOutputIsUlaw) return
     const frame = outboundQueue.shift()
-    if (!frame) return
+    if (!frame) {
+      // Keep Twilio timing steady with silence fill if pacing already started
+      sendTwilioAudio(ws, streamSid, SILENCE_160)
+      return
+    }
     sendTwilioAudio(ws, streamSid, frame)
     txFrames++
     const now = Date.now()
@@ -166,6 +178,8 @@ wss.on('connection', (ws) => {
   }, 20)
 
   function enqueueMu(mu) { outboundQueue.push(mu) }
+
+  let oaiOutputIsUlaw = false
 
   function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt) {
   if (!OAI_KEY) return
@@ -189,13 +203,15 @@ wss.on('connection', (ws) => {
 
         // Normalize voice labels to OpenAI identifiers when possible
         const v = normalizeVoiceId(voice)
+        // Select μ-law passthrough to Twilio like the reference example
+        oaiOutputIsUlaw = true
         rws.send(JSON.stringify({
           type: 'session.update',
           session: {
             voice: v || 'sage',
             modalities: ['audio', 'text'],
             // Output μ-law 8k directly from Realtime for reliable pacing
-            output_audio_format: 'pcm16',
+            output_audio_format: 'g711_ulaw',
             input_audio_format: 'g711_ulaw',
             // Enable automatic speech turns with a slightly longer silence window
             turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
@@ -372,11 +388,37 @@ wss.on('connection', (ws) => {
             curHasAudio = true
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
-            const pcm24k = new Int16Array(Buffer.from(b64, 'base64').buffer)
-            const pcm8k = downsample24kTo8kLinear(pcm24k)
-            const mu = encodePcm16ToMuLaw(pcm8k)
-            for (let i = 0; i < mu.length; i += 160) {
-              enqueueMu(mu.subarray(i, i + 160))
+            if (oaiOutputIsUlaw) {
+              // Pass-through: forward μ-law base64 directly to Twilio like the reference example
+              sendTwilioAudioB64(ws, streamSid, b64)
+            } else {
+              // Fallback path: decode 24k PCM, resample, μ-law encode, and pace
+              const pcm24k = b64ToPcm16(b64)
+              let pcm8k
+              try {
+                if (!connectOpenAIRealtime._resamplers) connectOpenAIRealtime._resamplers = createResamplerCache()
+                const rs = connectOpenAIRealtime._resamplers.get(24000, 8000)
+                if (rs) {
+                  pcm8k = rs.processInt16(pcm24k)
+                } else {
+                  console.warn('[resample.missing] falling back to naive 24k->8k')
+                  pcm8k = downsample24kTo8kLinear(pcm24k)
+                }
+              } catch (e) {
+                console.warn('[resample.error] 24k->8k fallback', e?.message)
+                pcm8k = downsample24kTo8kLinear(pcm24k)
+              }
+              const mu = encodePcm16ToMuLaw(pcm8k)
+              // Exact 160-byte frames with carry-over
+              const combined = new Uint8Array(carryMu.length + mu.length)
+              combined.set(carryMu, 0)
+              combined.set(mu, carryMu.length)
+              let i = 0
+              while (i + 160 <= combined.length) {
+                enqueueMu(combined.subarray(i, i + 160))
+                i += 160
+              }
+              carryMu = combined.subarray(i) // keep remainder for next delta
             }
           }
           if (msg?.type === 'response.audio_transcript.delta') {
@@ -403,13 +445,40 @@ wss.on('connection', (ws) => {
                 })
                 if (ttsRes.ok) {
                   const buf = await ttsRes.arrayBuffer()
-                  const view = new DataView(buf)
+                  const meta = parseWavHeader(buf)
+                  let sampleRate = 0
                   let dataOffset = 44
-                  for (let i = 12; i < 44; i++) { if (view.getUint32(i, false) === 0x64617461) { dataOffset = i + 8; break } }
-                  const sampleRate = view.getUint32(24, true)
+                  if (meta) { sampleRate = meta.sampleRate; dataOffset = meta.dataOffset }
+                  else {
+                    // Fallback: assume standard 44-byte header with little-endian fields
+                    try { sampleRate = new DataView(buf).getUint32(24, true) } catch (_) { sampleRate = 0 }
+                  }
                   const bytes = new Uint8Array(buf, dataOffset)
                   const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2))
-                  const pcm8k = sampleRate === 8000 ? pcm16 : downsample16kTo8k(pcm16)
+                  let pcm8k
+                  if (sampleRate === 8000) {
+                    pcm8k = pcm16
+                  } else {
+                    try {
+                      // Support common 16k/24k → 8k paths with selected resampler
+                      if (!connectOpenAIRealtime._resamplers) connectOpenAIRealtime._resamplers = createResamplerCache()
+                      if (sampleRate % 8000 === 0 && (sampleRate === 16000 || sampleRate === 24000)) {
+                        const rs = connectOpenAIRealtime._resamplers.get(sampleRate, 8000)
+                        if (rs) pcm8k = rs.processInt16(pcm16)
+                      }
+                    } catch (e) {
+                      console.warn('[tts.resample.error]', e?.message)
+                    }
+                    if (!pcm8k) {
+                      // Last-resort fallback to simple decimation for 16k only (reduced quality)
+                      if (sampleRate === 16000) pcm8k = downsample16kTo8k(pcm16)
+                      else if (sampleRate === 24000) pcm8k = downsample24kTo8kLinear(pcm16)
+                      else {
+                        console.warn('[tts.sample_rate] unsupported sampleRate=', sampleRate, 'using passthrough (may sound wrong)')
+                        pcm8k = pcm16
+                      }
+                    }
+                  }
                   for (let i = 0; i < pcm8k.length; i += 160) enqueueMu(encodePcm16ToMuLaw(pcm8k.subarray(i, i + 160)))
                 }
               } catch (_) { /* ignore */ }
@@ -557,6 +626,36 @@ function b64ToPcm16(b64) {
   return new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 2))
 }
 
+function parseWavHeader(arrayBuffer) {
+  const view = new DataView(arrayBuffer)
+  // Check 'RIFF' and 'WAVE'
+  if (view.getUint32(0, false) !== 0x52494646 /* 'RIFF' */) return null
+  if (view.getUint32(8, false) !== 0x57415645 /* 'WAVE' */) return null
+  let offset = 12
+  let fmt = null
+  let dataOffset = null
+  while (offset + 8 <= view.byteLength) {
+    const id = view.getUint32(offset + 0, false)
+    const size = view.getUint32(offset + 4, true) // chunk size is little-endian
+    if (id === 0x666d7420 /* 'fmt ' */) {
+      fmt = {
+        audioFormat: view.getUint16(offset + 8, true),
+        channels: view.getUint16(offset + 10, true),
+        sampleRate: view.getUint32(offset + 12, true),
+        byteRate: view.getUint32(offset + 16, true),
+        blockAlign: view.getUint16(offset + 20, true),
+        bitsPerSample: view.getUint16(offset + 22, true),
+      }
+    } else if (id === 0x64617461 /* 'data' */) {
+      dataOffset = offset + 8
+      // do not break; still advance to be robust to LIST chunks order
+    }
+    offset += 8 + size
+  }
+  if (!fmt || dataOffset == null) return null
+  return { sampleRate: fmt.sampleRate, channels: fmt.channels, bitsPerSample: fmt.bitsPerSample, dataOffset }
+}
+
 function downsample16kTo8k(pcm16k) {
   const out = new Int16Array(Math.floor(pcm16k.length / 2))
   for (let i = 0, j = 0; j < out.length; i += 2, j++) out[j] = pcm16k[i]
@@ -590,6 +689,261 @@ function downsample24kTo8kLinear(pcm24k) {
     out[j] = ((pcm24k[i] + pcm24k[i+1] + pcm24k[i+2]) / 3) | 0;
   }
   return out;
+}
+
+// --- High-quality resampling: prefer libsamplerate; fallback to FIR decimator ---
+let SamplerateLib = null
+let RESAMPLER_MODE = (process.env.RESAMPLER || 'auto').toLowerCase() // auto|libsamplerate|fir
+try {
+  if (RESAMPLER_MODE !== 'fir') {
+    // Try WASM libsamplerate first
+    try { SamplerateLib = require('libsamplerate.js') } catch (_) { SamplerateLib = null }
+    // (Optional compatibility) also try older/native naming if present in env
+    if (!SamplerateLib) {
+      try { SamplerateLib = require('@samplerate/samplerate') } catch (_) { /* ignore */ }
+    }
+  }
+} catch (_) {
+  SamplerateLib = null
+}
+
+function createLibsamplerateResampler(fromRate, toRate) {
+  if (!SamplerateLib) return null
+  const stats = { frames: 0, totalMs: 0, lastLog: Date.now() }
+  const label = `libsamplerate_${fromRate}to${toRate}`
+  try {
+    // Adapter for different libsamplerate shapes
+    // Shape A (class-based): new Resampler({ type, channels, fromRate, toRate }).process(Float32Array)
+    if (SamplerateLib.Resampler && typeof SamplerateLib.Resampler === 'function') {
+      const type = SamplerateLib.SRC_SINC_BEST_QUALITY || SamplerateLib.SRC_SINC_MEDIUM_QUALITY || 0
+      const inst = new SamplerateLib.Resampler({ type, channels: 1, fromRate, toRate })
+      return {
+        label,
+        processInt16(pcmIn) {
+          const t0 = Date.now()
+          const fIn = new Float32Array(pcmIn.length)
+          for (let i = 0; i < pcmIn.length; i++) fIn[i] = pcmIn[i] / 32768.0
+          const fOut = inst.process(fIn)
+          const y = new Int16Array(fOut.length)
+          for (let i = 0; i < fOut.length; i++) {
+            const s = Math.max(-1, Math.min(1, fOut[i]))
+            y[i] = (s * 32768) | 0
+          }
+          const ms = Date.now() - t0
+          const now = Date.now()
+          stats.frames++
+          stats.totalMs += ms
+          if (now - stats.lastLog > 2000) {
+            const avg = stats.totalMs / (stats.frames || 1)
+            console.log('[resample.stats]', label, 'frames=', stats.frames, 'avg_ms=', avg.toFixed(3))
+            stats.frames = 0
+            stats.totalMs = 0
+            stats.lastLog = now
+          }
+          return y
+        }
+      }
+    }
+    // Shape C (constructor function export with .Type; stream-based API expecting Float32 Buffer I/O)
+    if (typeof SamplerateLib === 'function' && SamplerateLib.Type) {
+      const Type = SamplerateLib.Type
+      const ratio = toRate / fromRate
+      const inst = new SamplerateLib({ type: Type.SINC_BEST_QUALITY || Type.SINC_MEDIUM_QUALITY || 0, ratio, channels: 1 })
+      return {
+        label,
+        processInt16(pcmIn) {
+          const t0 = Date.now()
+          // Build Float32 input Buffer (4 bytes per sample)
+          const fIn = new Float32Array(pcmIn.length)
+          for (let i = 0; i < pcmIn.length; i++) fIn[i] = pcmIn[i] / 32768.0
+          const bufIn = Buffer.from(fIn.buffer)
+          const outChunks = []
+          const onData = (chunk) => { outChunks.push(chunk) }
+          inst.on('data', onData)
+          try { inst.write(bufIn) } finally { inst.off('data', onData) }
+          // Concatenate output Float32 buffers
+          let outLenBytes = 0
+          for (let i = 0; i < outChunks.length; i++) outLenBytes += outChunks[i].length
+          const outBuf = Buffer.concat(outChunks, outLenBytes)
+          const fOut = new Float32Array(outBuf.buffer, outBuf.byteOffset, outBuf.byteLength / 4)
+          const y = new Int16Array(fOut.length)
+          for (let i = 0; i < fOut.length; i++) {
+            const s = Math.max(-1, Math.min(1, fOut[i]))
+            y[i] = (s * 32768) | 0
+          }
+          const ms = Date.now() - t0
+          const now = Date.now()
+          stats.frames++
+          stats.totalMs += ms
+          if (now - stats.lastLog > 2000) {
+            const avg = stats.totalMs / (stats.frames || 1)
+            console.log('[resample.stats]', label, 'frames=', stats.frames, 'avg_ms=', avg.toFixed(3))
+            stats.frames = 0
+            stats.totalMs = 0
+            stats.lastLog = now
+          }
+          return y
+        }
+      }
+    }
+    // Shape B (function-based): resample(Float32Array, fromRate, toRate, channels, quality)
+    const mod = SamplerateLib.default || SamplerateLib
+    const fn = mod && (mod.resample || mod.src_simple || mod.srcSimple)
+    if (typeof fn === 'function') {
+      return {
+        label,
+        processInt16(pcmIn) {
+          const t0 = Date.now()
+          const fIn = new Float32Array(pcmIn.length)
+          for (let i = 0; i < pcmIn.length; i++) fIn[i] = pcmIn[i] / 32768.0
+          // quality hint if supported; fallback to best available
+          const quality = mod.SRC_SINC_BEST_QUALITY || mod.QUALITY_BEST || 0
+          let fOut
+          try {
+            fOut = fn(fIn, fromRate, toRate, 1, quality)
+          } catch (_) {
+            // Some APIs expect ratio, not two rates; try that as a fallback
+            const ratio = toRate / fromRate
+            fOut = fn(fIn, ratio, quality)
+          }
+          const y = new Int16Array(fOut.length)
+          for (let i = 0; i < fOut.length; i++) {
+            const s = Math.max(-1, Math.min(1, fOut[i]))
+            y[i] = (s * 32768) | 0
+          }
+          const ms = Date.now() - t0
+          const now = Date.now()
+          stats.frames++
+          stats.totalMs += ms
+          if (now - stats.lastLog > 2000) {
+            const avg = stats.totalMs / (stats.frames || 1)
+            console.log('[resample.stats]', label, 'frames=', stats.frames, 'avg_ms=', avg.toFixed(3))
+            stats.frames = 0
+            stats.totalMs = 0
+            stats.lastLog = now
+          }
+          return y
+        }
+      }
+    }
+    console.warn('[resample.init.error] libsamplerate: unsupported API shape')
+    return null
+  } catch (e) {
+    console.warn('[resample.init.error] libsamplerate', e?.message)
+    return null
+  }
+}
+
+// --- High-quality FIR decimator with anti-aliasing ---
+// Design a Hamming-windowed low-pass FIR (cutoff ~3.4kHz for 8k telephony)
+function designFIRLowpass(numTaps, cutoffHz, fs) {
+  const taps = new Float32Array(numTaps)
+  const fc = cutoffHz / fs // normalized cutoff (0..0.5)
+  const M = numTaps - 1
+  let sum = 0
+  for (let n = 0; n <= M; n++) {
+    const k = n - M / 2
+    // sinc(2*fc*k) with handling k=0
+    const x = (k === 0) ? 2 * fc : Math.sin(2 * Math.PI * fc * k) / (Math.PI * k)
+    const w = 0.54 - 0.46 * Math.cos((2 * Math.PI * n) / M) // Hamming window
+    const h = x * w
+    taps[n] = h
+    sum += h
+  }
+  // Normalize DC gain to 1.0
+  for (let n = 0; n <= M; n++) taps[n] /= sum || 1
+  return taps
+}
+
+class FirDecimator {
+  constructor(fromRate, toRate, opts) {
+    if (!toRate || !fromRate || fromRate % toRate !== 0) {
+      throw new Error(`FirDecimator requires integer ratio. fromRate=${fromRate} toRate=${toRate}`)
+    }
+    this.factor = fromRate / toRate
+    const numTaps = (opts && opts.numTaps) || 63
+    const cutoff = (opts && opts.cutoffHz) || 3400
+    this.taps = designFIRLowpass(numTaps, cutoff, fromRate)
+    this.state = new Float32Array(this.taps.length - 1)
+    this.stats = { frames: 0, totalMs: 0, lastLog: Date.now() }
+    this.label = `fir_polyphase_${fromRate}to${toRate}_t${numTaps}_f${this.factor}`
+  }
+  processInt16(pcmIn) {
+    const t0 = Date.now()
+    const L = this.taps.length
+    // Build working buffer = [state | current]
+    const x = new Float32Array(this.state.length + pcmIn.length)
+    // Copy previous tail
+    x.set(this.state, 0)
+    // Append current normalized samples
+    for (let i = 0; i < pcmIn.length; i++) x[this.state.length + i] = pcmIn[i] / 32768.0
+    // Compute number of output samples available
+    const available = x.length - (L - 1)
+    const outLen = Math.max(0, Math.floor(available / this.factor))
+    const y = new Int16Array(outLen)
+    // Convolution + decimation
+    let outIdx = 0
+    for (let n = L - 1; n <= x.length - 1 && outIdx < outLen; n += this.factor) {
+      let acc = 0.0
+      // Unrolled-ish inner loop for performance
+      for (let k = 0; k < L; k++) {
+        acc += this.taps[k] * x[n - k]
+      }
+      // Clamp to Int16
+      const s = Math.max(-1, Math.min(1, acc))
+      y[outIdx++] = (s * 32768) | 0
+    }
+    // Save new tail
+    const tailStart = Math.max(0, x.length - (L - 1))
+    this.state.set(x.subarray(tailStart))
+    // Stats
+    const ms = Date.now() - t0
+    const now = Date.now()
+    this.stats.frames++
+    this.stats.totalMs += ms
+    if (now - this.stats.lastLog > 2000) {
+      const avg = this.stats.totalMs / (this.stats.frames || 1)
+      console.log('[resample.stats]', this.label, 'frames=', this.stats.frames, 'avg_ms=', avg.toFixed(3))
+      this.stats.frames = 0
+      this.stats.totalMs = 0
+      this.stats.lastLog = now
+    }
+    return y
+  }
+}
+
+// Connection-scoped resamplers cache to preserve state
+function createResamplerCache() {
+  const cache = new Map()
+  return {
+    get(fromRate, toRate) {
+      const key = `${fromRate}->${toRate}`
+      if (!cache.has(key)) {
+        let inst = null
+        // Selection: libsamplerate preferred in auto/libsamplerate modes
+        if (RESAMPLER_MODE === 'auto' || RESAMPLER_MODE === 'libsamplerate') {
+          inst = createLibsamplerateResampler(fromRate, toRate)
+          if (inst) {
+            console.log('[resample.select]', inst.label)
+          } else if (RESAMPLER_MODE === 'libsamplerate') {
+            console.warn('[resample.select] libsamplerate requested but unavailable; falling back to FIR')
+          }
+        }
+        if (!inst) {
+          try {
+            const fir = new FirDecimator(fromRate, toRate, { numTaps: 63, cutoffHz: 3400 })
+            console.log('[resample.select]', fir.label)
+            inst = fir
+          } catch (e) {
+            console.warn('[resample.init.error] fir', e?.message)
+            inst = null
+          }
+        }
+        cache.set(key, inst)
+      }
+      return cache.get(key)
+    }
+  }
 }
 
 async function invokeToolAndRespond(rws, callId, name, argsJson, ctx) {

@@ -6,18 +6,18 @@
 - Determined that naive downsampling of OpenAI's 24 kHz PCM output without low-pass filtering introduces audible aliasing and compression artifacts.
 - Documented a recovery plan that replaces naive resampling with high-quality signal processing to preserve audio fidelity while maintaining the required 24 kHz → 8 kHz conversion.
 
-## CRITICAL UPDATE: OpenAI API Format Constraints
+## CRITICAL UPDATE: OpenAI API Format Options
 
-**OpenAI's Realtime API does NOT support `g711_ulaw` output format.** The API only supports:
+OpenAI's Realtime API supports `g711_ulaw` output. We now configure Realtime to output μ-law 8 kHz and pass audio through directly to Twilio.
 
-- **Output formats:** `pcm16` (16-bit PCM at 24kHz) - this is the only available option
-- **Input formats:** `g711_ulaw`, `pcm16`
+- Output formats used: `g711_ulaw` (primary), `pcm16` (fallback/testing)
+- Input formats: `g711_ulaw`, `pcm16`
 
-Therefore, **resampling from 24kHz to 8kHz is unavoidable**. The solution must focus on implementing high-quality resampling rather than eliminating it.
+Therefore, the primary path no longer resamples locally. We retain a high-quality resampler for the fallback path only when `pcm16` is used.
 
 ## Root Cause Analysis
 
-- **Required format conversion:** OpenAI Realtime API outputs `pcm16` at 24 kHz (only available format), while Twilio expects µ-law 8 kHz. This 3:1 downsampling is unavoidable and must be handled correctly.
+- **Original issue (fixed):** We previously downsampled 24 kHz PCM to 8 kHz and then µ-law encoded, which caused aliasing and choppiness due to naive resampling and timing gaps.
 - **Naive resampling implementation (PRIMARY ISSUE):** The current `downsample24kTo8kLinear` function in `server/twilio-media-ws.js:587-593` performs simple averaging of every 3 samples without low-pass filtering. This violates the Nyquist theorem and creates aliasing artifacts:
   ```javascript
   // PROBLEM: No anti-aliasing filter before downsampling
@@ -46,27 +46,19 @@ Outgoing PSTN audio routed through our Twilio bridge sounds overly compressed co
 
 ### Proposed Solution
 
-**PRIMARY FIX: Replace naive resampling with high-quality signal processing**
+**PRIMARY FIX: Switch to μ-law passthrough (no local resampling)**
 
-1. **Integrate professional-grade resampler library:**
-   - **RECOMMENDED:** `@samplerate/samplerate` - Node.js bindings to libsamplerate (SoX quality)
-     - Pros: Industry-standard sinc interpolation, best quality, low latency
-     - Cons: Native dependency (requires compilation)
-   - **Alternative 1:** `audio-resampler` (WASM-based)
-     - Pros: No native dependencies, good quality
-     - Cons: Slightly higher CPU overhead
-   - **Alternative 2:** `libsamplerate.js` (Pure JS port)
-     - Pros: No dependencies, decent quality
-     - Cons: Higher CPU usage than native
+1. **Configure Realtime for g711_ulaw output:**
+   - OpenAI emits μ-law 8 kHz; we forward deltas directly to Twilio.
+   - Removes local resampling and reduces CPU/latency.
 
-2. **Replace `downsample24kTo8kLinear` in server/twilio-media-ws.js:**
-   - Apply low-pass filter at 3.4kHz cutoff (Nyquist for 8kHz, matching G.711 bandwidth)
-   - Use sinc interpolation or equivalent high-quality algorithm
-   - Maintain < 10ms processing latency per audio chunk
+2. **Exact-frame handling and pacing:**
+   - For passthrough: forward deltas immediately (no ticker).
+   - For fallback path: emit exact 160-byte μ-law frames with carry-over; prebuffer ~100 ms; fill underflows with μ-law silence.
 
-3. **Update fallback TTS pipeline (lines 399-414):**
-   - Apply same high-quality resampling to fallback TTS audio
-   - Ensure consistent quality between realtime and fallback paths
+3. **Fallback path retained:**
+   - If `pcm16` is used, apply high-quality resampling (libsamplerate preferred; FIR decimator fallback).
+   - TTS fallback uses robust WAV header parsing and high-quality path when resampling is needed.
 
 4. **Add observability:**
    - Log resampling method and latency per frame
@@ -75,22 +67,20 @@ Outgoing PSTN audio routed through our Twilio bridge sounds overly compressed co
 
 ### Milestones & Acceptance Criteria
 
-1. **High-Quality Resampler Integration**
-   - [ ] Evaluate and select resampler library (`@samplerate/samplerate` recommended)
-   - [ ] Install and test library in development environment
-   - [ ] Implement wrapper function with appropriate filter settings (3.4kHz cutoff, sinc interpolation)
-   - [ ] Measure processing latency (must be < 10ms per chunk)
+1. **μ-law Passthrough Integration**
+   - [x] Configure Realtime for `g711_ulaw` output and pass-through to Twilio
+   - [x] Remove resampling from primary path; keep fallback only
+   - [x] Measure end-to-end latency and CPU (target: negligible vs resampling)
 
-2. **Replace Naive Resampling in Production Path**
-   - [ ] Replace `downsample24kTo8kLinear` in `server/twilio-media-ws.js:587-593`
-   - [ ] Update audio delta handler (lines 370-381) to use new resampler
-   - [ ] Ensure µ-law encoding (`encodePcm16ToMuLaw`) remains unchanged
-   - [ ] Add error handling and fallback to naive resampler if library fails
+2. **Frame Handling & Pacing**
+   - [x] Add carry-over for exact 160-byte frames; μ-law silence fill on underflow
+   - [x] Increase prebuffer to ~100 ms for smoother starts
+   - [x] Disable ticker in passthrough mode; forward immediately
 
 3. **Fallback TTS Pipeline Update**
-   - [ ] Update fallback TTS resampling (lines 399-414) to use same high-quality resampler
-   - [ ] Ensure `downsample16kTo8k` is also replaced or removed
-   - [ ] Validate fallback audio quality matches realtime quality
+   - [x] Robust RIFF/WAV parsing for correct sample rate
+   - [x] Use high-quality resampling only when `pcm16` fallback is in effect
+   - [ ] Validate fallback audio quality matches passthrough quality
 
 4. **Quality Validation & Testing**
    - [ ] **Objective metrics:**
@@ -106,106 +96,55 @@ Outgoing PSTN audio routed through our Twilio bridge sounds overly compressed co
      - Ensure < 120ms total additional jitter (existing requirement)
 
 5. **Observability & Monitoring**
-   - [ ] Add structured logs for resampler selection and performance
-   - [ ] Log processing latency per audio chunk
+   - [x] Add structured logs for resampler selection and performance
+   - [x] Log processing latency per audio chunk
    - [ ] Add counters for buffer underruns or resampling errors
    - [ ] Create dashboard for audio quality metrics in production
 
 ### Pseudocode Sketch
 
 ```javascript
-// Install high-quality resampler
-// npm install @samplerate/samplerate
-
-const samplerate = require('@samplerate/samplerate');
-
-// Initialize resampler with high-quality settings
-const resampler = new samplerate.Resampler({
-  type: samplerate.SRC_SINC_BEST_QUALITY, // Best quality sinc interpolation
-  channels: 1, // Mono audio
-  fromRate: 24000, // OpenAI outputs 24kHz
-  toRate: 8000, // Twilio expects 8kHz
-});
-
-// Replace downsample24kTo8kLinear with high-quality resampling
-function downsample24kTo8kHighQuality(pcm24k) {
-  try {
-    // Convert Int16Array to Float32Array (normalized to -1.0 to 1.0)
-    const float24k = new Float32Array(pcm24k.length);
-    for (let i = 0; i < pcm24k.length; i++) {
-      float24k[i] = pcm24k[i] / 32768.0;
-    }
-
-    // Resample with anti-aliasing filter
-    const float8k = resampler.process(float24k);
-
-    // Convert back to Int16Array
-    const pcm8k = new Int16Array(float8k.length);
-    for (let i = 0; i < float8k.length; i++) {
-      pcm8k[i] = Math.max(
-        -32768,
-        Math.min(32767, Math.round(float8k[i] * 32768.0)),
-      );
-    }
-
-    return pcm8k;
-  } catch (e) {
-    // Fallback to naive resampling if library fails
-    console.warn(
-      '[resample.error] falling back to naive resampler:',
-      e.message,
-    );
-    return downsample24kTo8kLinear(pcm24k);
-  }
-}
-
-// Session configuration (CORRECT - OpenAI only supports pcm16 output)
+// Session configuration (μ-law passthrough)
 const sessionUpdate = {
   type: 'session.update',
   session: {
     voice: normalizeVoiceId(voice) ?? 'sage',
     modalities: ['audio', 'text'],
-    output_audio_format: 'pcm16', // ONLY available format from OpenAI
-    // output_audio_sample_rate: 24000  // Implicit, cannot be changed
-    input_audio_format: 'g711_ulaw', // Correct for Twilio input
+    output_audio_format: 'g711_ulaw',
+    input_audio_format: 'g711_ulaw',
     turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
     tools,
     instructions,
   },
 };
 
-// When receiving realtime audio deltas (updated)
-if (msg.type === 'response.output_audio.delta') {
-  const pcm24k = new Int16Array(Buffer.from(msg.delta, 'base64').buffer);
-  const pcm8k = downsample24kTo8kHighQuality(pcm24k); // Use high-quality resampler
-  const mu = encodePcm16ToMuLaw(pcm8k);
-  for (let i = 0; i < mu.length; i += 160) {
-    enqueueMu(mu.subarray(i, i + 160));
-  }
+// When receiving realtime audio deltas (passthrough)
+if (msg.type === 'response.audio.delta' && msg.delta) {
+  // Forward μ-law base64 directly to Twilio
+  ws.send(
+    JSON.stringify({
+      event: 'media',
+      streamSid,
+      media: { payload: msg.delta },
+    }),
+  );
 }
+
+// Fallback path (if using pcm16): resample to 8k and encode μ-law with exact 160-byte frames
+// - Use high-quality resampling (libsamplerate preferred; FIR fallback)
+// - Maintain a carry buffer and fill underflows with μ-law silence to keep pacing steady
 ```
 
 ### Risks & Mitigations
 
-- **Native dependency compilation:** `@samplerate/samplerate` requires native compilation which may fail in some environments.
-  - _Mitigation:_ Provide fallback to WASM-based `audio-resampler` or pure JS implementation
-  - _Mitigation:_ Add pre-compiled binaries for common platforms (Linux x64, macOS arm64/x64)
+- **Passthrough timing jitter:** Irregular delta cadence can cause audible gaps if not paced.
+  - _Mitigation:_ In fallback path, prebuffer ~100 ms, emit exact 160-byte frames with carry-over, and fill underflows with μ-law silence. Passthrough path forwards immediately.
 
-- **Increased CPU overhead:** High-quality resampling uses more CPU than naive averaging.
-  - _Mitigation:_ Benchmark CPU usage in production-like environment (target: < 5% CPU per call)
-  - _Mitigation:_ Use `SRC_SINC_MEDIUM_QUALITY` instead of `BEST_QUALITY` if latency becomes an issue
+- **Fallback resampler complexity:** Only used when `pcm16` is required.
+  - _Mitigation:_ Prefer libsamplerate (WASM/native) with FIR fallback; keep clear logs and error handling.
 
-- **Processing latency:** Resampling adds computational delay to audio pipeline.
-  - _Mitigation:_ Process audio in small chunks (160-sample frames) to minimize buffering
-  - _Mitigation:_ Monitor end-to-end latency and rollback if it exceeds 120ms threshold
-
-- **Library stability:** Third-party resampler could have bugs or edge cases.
-  - _Mitigation:_ Keep naive resampler as emergency fallback (with logging)
-  - _Mitigation:_ Add automated testing with known audio samples
-
-- **Twilio jitter sensitivity:** Changes to audio pipeline could affect pacing.
-  - _Mitigation:_ Maintain existing pacing queue (20ms ticker, PREBUFFER_FRAMES=2)
-  - _Mitigation:_ Monitor Twilio WebSocket backpressure and buffer occupancy
+- **Processing latency:** Keep additional latency ≤ 120 ms end-to-end.
+  - _Mitigation:_ Avoid local resampling in primary path; monitor pacing and queue occupancy.
 
 ### Testing Plan
 
@@ -217,8 +156,8 @@ if (msg.type === 'response.output_audio.delta') {
    - Test edge cases: silence, clipping, very short buffers
 
 2. **Integration testing:**
-   - Record test calls with current (naive) resampling
-   - Record test calls with new high-quality resampling
+   - Record test calls with previous (naive) resampling
+   - Record test calls with μ-law passthrough primary path
    - Generate spectrograms for both recordings to visualize aliasing reduction
 
 3. **Performance benchmarking:**
@@ -259,7 +198,11 @@ if (msg.type === 'response.output_audio.delta') {
 
 #### 1. Resampler Library Selection
 
-**RECOMMENDED: `@samplerate/samplerate`**
+**Target Quality: libsamplerate‑grade sinc resampling**
+
+- Default runtime selection: `RESAMPLER=auto` (prefers libsamplerate when installed; falls back to FIR)
+- Force testing libsamplerate: `RESAMPLER=libsamplerate`
+- Force FIR baseline: `RESAMPLER=fir`
 
 - **Pros:**
   - Industry-standard libsamplerate (used by SoX, Audacity, etc.)
@@ -315,45 +258,18 @@ if (msg.type === 'response.output_audio.delta') {
 - Run automated frequency analysis (script in `tests/audio-analysis.js`)
 - Ensure no regression in frequency response or THD
 
-#### 4. Feature Flag Implementation
+#### 4. Rollout Notes
 
-**Use environment variable for gradual rollout:**
-
-```javascript
-// Add to server/twilio-media-ws.js
-const USE_HIGH_QUALITY_RESAMPLER =
-  process.env.HIGH_QUALITY_RESAMPLER_ENABLED === 'true';
-const RESAMPLER_ROLLOUT_PERCENTAGE = parseInt(
-  process.env.RESAMPLER_ROLLOUT_PERCENTAGE || '100',
-  10,
-);
-
-function shouldUseHighQualityResampler(callSid) {
-  if (!USE_HIGH_QUALITY_RESAMPLER) return false;
-
-  // Deterministic rollout based on call SID hash
-  const hash = callSid
-    .split('')
-    .reduce((acc, char) => acc + char.charCodeAt(0), 0);
-  return hash % 100 < RESAMPLER_ROLLOUT_PERCENTAGE;
-}
-```
-
-**Rollout stages:**
-
-- Stage 1: `RESAMPLER_ROLLOUT_PERCENTAGE=10` (1-2 days, monitor closely)
-- Stage 2: `RESAMPLER_ROLLOUT_PERCENTAGE=50` (2-3 days, collect data)
-- Stage 3: `RESAMPLER_ROLLOUT_PERCENTAGE=100` (full rollout)
-- Emergency rollback: `HIGH_QUALITY_RESAMPLER_ENABLED=false`
+Primary path (μ-law passthrough) is the default. Fallback path is exercised only when `pcm16` is used for testing or alternative scenarios.
 
 #### 5. Current Configuration Validation
 
-The existing configuration in `server/twilio-media-ws.js` is **already correct**:
+The current configuration in `server/twilio-media-ws.js` reflects the new primary path:
 
-- ✅ `output_audio_format: 'pcm16'` (line 198) - Correct, only option available
-- ✅ `input_audio_format: 'g711_ulaw'` (line 199) - Correct for Twilio
-- ✅ WebSocket compression disabled (line 64) - Good for latency
-- ✅ TCP_NODELAY enabled (line 66) - Good for latency
-- ✅ Pacing queue with prebuffer (lines 144-166) - Good for jitter handling
+- ✅ `output_audio_format: 'g711_ulaw'` — passthrough to Twilio
+- ✅ `input_audio_format: 'g711_ulaw'` — correct for Twilio input
+- ✅ WebSocket compression disabled — good for latency
+- ✅ TCP_NODELAY enabled — good for latency
+- ✅ Passthrough forwards deltas immediately; fallback path uses prebuffer and exact 20 ms frames
 
-**No changes needed to session configuration or WebSocket setup.** The ONLY change required is replacing the `downsample24kTo8kLinear` function.
+Primary behavior requires no local resampling; fallback retains high-quality resampler.
