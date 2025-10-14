@@ -60,6 +60,30 @@ async function requireOrgRole(
     .eq('user_id', userId)
     .single();
   if (!member) return false;
+
+  const { data: account } = await supabase
+    .from<{ is_disabled: boolean }>('accounts')
+    .select('is_disabled')
+    .eq('id', orgId)
+    .maybeSingle();
+
+  if (account?.is_disabled) {
+    const admin = getAdminClient();
+    const { data: hasOverride, error: overrideError } = await admin.rpc('has_break_glass_access', {
+      p_account_id: orgId,
+      p_user_id: userId,
+    });
+
+    if (overrideError) {
+      console.error('Error checking break glass override', overrideError);
+      return false;
+    }
+
+    if (!hasOverride) {
+      return false;
+    }
+  }
+
   if (roles.length === 0) return true;
   return roles.includes(member.role);
 }
