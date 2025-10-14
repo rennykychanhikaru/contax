@@ -19,6 +19,7 @@ type Account = {
   created_at: string;
   updated_at: string;
   account_user: AccountMember[] | null;
+  has_active_break_glass: boolean;
 };
 
 type AccountsResponse = {
@@ -43,8 +44,14 @@ export default function AdminAccountsPage() {
   const [accountsState, setAccountsState] =
     useState<FetchState<AccountsResponse>>({ status: 'idle' });
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [superAdminFilter, setSuperAdminFilter] = useState<'all' | 'super' | 'non-super'>('all');
+  const [breakGlassFilter, setBreakGlassFilter] = useState<'all' | 'active' | 'none'>('all');
+  const [createdAfter, setCreatedAfter] = useState('');
+  const [createdBefore, setCreatedBefore] = useState('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
 
   type DialogState =
     | {
@@ -59,6 +66,27 @@ export default function AdminAccountsPage() {
         account: Account;
         submitting: boolean;
         error: string | null;
+      }
+    | {
+        mode: 'bulkDisable';
+        accountIds: string[];
+        reason: string;
+        submitting: boolean;
+        error: string | null;
+        result?: {
+          succeeded: string[];
+          failed: { accountId: string; error: string }[];
+        };
+      }
+    | {
+        mode: 'bulkEnable';
+        accountIds: string[];
+        submitting: boolean;
+        error: string | null;
+        result?: {
+          succeeded: string[];
+          failed: { accountId: string; error: string }[];
+        };
       }
     | {
         mode: 'create';
@@ -83,9 +111,14 @@ export default function AdminAccountsPage() {
     setAccountsState({ status: 'loading' });
     const params = new URLSearchParams({ limit: '100' });
     if (searchTerm) params.set('search', searchTerm);
-    if (statusFilter !== 'all') {
-      params.set('isDisabled', statusFilter === 'disabled' ? 'true' : 'false');
-    }
+    if (statusFilter === 'active') params.set('status', 'active');
+    if (statusFilter === 'disabled') params.set('status', 'disabled');
+    if (superAdminFilter === 'super') params.set('superAdmin', 'true');
+    if (superAdminFilter === 'non-super') params.set('superAdmin', 'false');
+    if (breakGlassFilter === 'active') params.set('hasBreakGlass', 'true');
+    if (breakGlassFilter === 'none') params.set('hasBreakGlass', 'false');
+    if (createdAfter) params.set('createdAfter', createdAfter);
+    if (createdBefore) params.set('createdBefore', createdBefore);
 
     try {
       const res = await fetch(`/api/admin/accounts?${params.toString()}`, {
@@ -104,7 +137,7 @@ export default function AdminAccountsPage() {
         message: error instanceof Error ? error.message : 'Unexpected error',
       });
     }
-  }, [searchTerm, statusFilter]);
+  }, [searchTerm, statusFilter, superAdminFilter, breakGlassFilter, createdAfter, createdBefore]);
 
   const fetchBreakGlassOverrides = useCallback(async (accountId: string) => {
     setDialog((prev) =>
@@ -151,6 +184,13 @@ export default function AdminAccountsPage() {
     }
   }, [searchInput, searchTerm]);
 
+  useEffect(() => {
+    if (accountsState.status === 'success') {
+      const allIds = accountsState.data.accounts.map((account) => account.id);
+      setSelectedAccountIds((prev) => prev.filter((id) => allIds.includes(id)));
+    }
+  }, [accountsState]);
+
   const stats = useMemo(() => {
     if (accountsState.status !== 'success') {
       return { total: 0, disabled: 0 };
@@ -161,6 +201,29 @@ export default function AdminAccountsPage() {
       disabled: data.filter((account) => account.is_disabled).length,
     };
   }, [accountsState]);
+
+  const toggleAccountSelection = (accountId: string, checked: boolean) => {
+    setSelectedAccountIds((prev) => {
+      if (checked) {
+        if (prev.includes(accountId)) return prev;
+        return [...prev, accountId];
+      }
+      return prev.filter((id) => id !== accountId);
+    });
+  };
+
+  const toggleSelectAllVisible = (checked: boolean, visibleAccounts: Account[]) => {
+    if (!checked) {
+      const visibleIds = new Set(visibleAccounts.map((account) => account.id));
+      setSelectedAccountIds((prev) => prev.filter((id) => !visibleIds.has(id)));
+      return;
+    }
+
+    const visibleIds = visibleAccounts.map((account) => account.id);
+    setSelectedAccountIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+  };
+
+  const clearSelection = () => setSelectedAccountIds([]);
 
   const openDisableDialog = (account: Account) => {
     setDialog({
@@ -202,6 +265,25 @@ export default function AdminAccountsPage() {
       name: '',
       ownerEmail: '',
       customPassword: '',
+      submitting: false,
+      error: null,
+    });
+  };
+
+  const openBulkDisableDialog = () => {
+    setDialog({
+      mode: 'bulkDisable',
+      accountIds: selectedAccountIds,
+      reason: '',
+      submitting: false,
+      error: null,
+    });
+  };
+
+  const openBulkEnableDialog = () => {
+    setDialog({
+      mode: 'bulkEnable',
+      accountIds: selectedAccountIds,
       submitting: false,
       error: null,
     });
@@ -337,6 +419,95 @@ export default function AdminAccountsPage() {
             }
           : prev
       );
+    }
+  };
+
+  const submitBulkDisable = async () => {
+    if (!dialog || dialog.mode !== 'bulkDisable') return;
+
+    const reason = dialog.reason.trim();
+    if (!reason) {
+      setDialog({ ...dialog, error: 'Reason is required.' });
+      return;
+    }
+
+    setDialog({ ...dialog, submitting: true, error: null, result: undefined });
+
+    try {
+      const res = await fetch('/api/admin/accounts/bulk-disable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ accountIds: dialog.accountIds, reason }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Unable to disable accounts');
+      }
+
+      const body = (await res.json()) as {
+        succeeded: string[];
+        failed: { accountId: string; error: string }[];
+      };
+
+      await fetchAccounts();
+      setSelectedAccountIds((prev) => prev.filter((id) => body.failed.some((f) => f.accountId === id)));
+
+      setDialog({
+        ...dialog,
+        submitting: false,
+        error: null,
+        result: body,
+        reason: '',
+      });
+    } catch (error) {
+      setDialog({
+        ...dialog,
+        submitting: false,
+        error: error instanceof Error ? error.message : 'Unexpected error',
+      });
+    }
+  };
+
+  const submitBulkEnable = async () => {
+    if (!dialog || dialog.mode !== 'bulkEnable') return;
+
+    setDialog({ ...dialog, submitting: true, error: null, result: undefined });
+
+    try {
+      const res = await fetch('/api/admin/accounts/bulk-enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ accountIds: dialog.accountIds }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Unable to enable accounts');
+      }
+
+      const body = (await res.json()) as {
+        succeeded: string[];
+        failed: { accountId: string; error: string }[];
+      };
+
+      await fetchAccounts();
+      setSelectedAccountIds((prev) => prev.filter((id) => body.failed.some((f) => f.accountId === id)));
+
+      setDialog({
+        ...dialog,
+        submitting: false,
+        error: null,
+        result: body,
+      });
+    } catch (error) {
+      setDialog({
+        ...dialog,
+        submitting: false,
+        error: error instanceof Error ? error.message : 'Unexpected error',
+      });
     }
   };
 
@@ -550,6 +721,133 @@ export default function AdminAccountsPage() {
         </button>
       </div>
 
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => setShowAdvancedFilters((prev) => !prev)}
+          className="text-sm font-medium text-indigo-600 hover:text-indigo-500"
+        >
+          {showAdvancedFilters ? 'Hide filters' : 'Show filters'}
+        </button>
+        {(statusFilter !== 'all' ||
+          superAdminFilter !== 'all' ||
+          breakGlassFilter !== 'all' ||
+          createdAfter ||
+          createdBefore) && (
+          <button
+            type="button"
+            onClick={() => {
+              setStatusFilter('all');
+              setSuperAdminFilter('all');
+              setBreakGlassFilter('all');
+              setCreatedAfter('');
+              setCreatedBefore('');
+            }}
+            className="text-xs font-medium text-gray-600 hover:text-gray-800"
+          >
+            Reset filters
+          </button>
+        )}
+      </div>
+
+      {showAdvancedFilters && (
+        <div className="grid gap-4 rounded-lg border border-gray-200 bg-white p-6 shadow-sm md:grid-cols-2 lg:grid-cols-3">
+          <label className="block text-sm font-medium text-gray-700">
+            Account Status
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}
+              className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              <option value="all">All</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
+          <label className="block text-sm font-medium text-gray-700">
+            Super Admin
+            <select
+              value={superAdminFilter}
+              onChange={(event) => setSuperAdminFilter(event.target.value as 'all' | 'super' | 'non-super')}
+              className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              <option value="all">All</option>
+              <option value="super">Super admin only</option>
+              <option value="non-super">Exclude super admin</option>
+            </select>
+          </label>
+          <label className="block text-sm font-medium text-gray-700">
+            Break-glass Overrides
+            <select
+              value={breakGlassFilter}
+              onChange={(event) => setBreakGlassFilter(event.target.value as 'all' | 'active' | 'none')}
+              className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            >
+              <option value="all">All</option>
+              <option value="active">Has active override</option>
+              <option value="none">No active override</option>
+            </select>
+          </label>
+          <label className="block text-sm font-medium text-gray-700">
+            Created After
+            <input
+              type="date"
+              value={createdAfter}
+              onChange={(event) => setCreatedAfter(event.target.value)}
+              className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </label>
+          <label className="block text-sm font-medium text-gray-700">
+            Created Before
+            <input
+              type="date"
+              value={createdBefore}
+              onChange={(event) => setCreatedBefore(event.target.value)}
+              className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </label>
+        </div>
+      )}
+
+      {selectedAccountIds.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-indigo-200 bg-indigo-50 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-medium text-indigo-900">
+              {selectedAccountIds.length} account
+              {selectedAccountIds.length === 1 ? '' : 's'} selected
+            </p>
+            <p className="text-xs text-indigo-700">
+              Bulk operations limited to 10 accounts per request.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={openBulkDisableDialog}
+              disabled={selectedAccountIds.length === 0 || selectedAccountIds.length > 10}
+              className="inline-flex items-center rounded bg-red-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Disable Selected
+            </button>
+            <button
+              type="button"
+              onClick={openBulkEnableDialog}
+              disabled={selectedAccountIds.length === 0 || selectedAccountIds.length > 10}
+              className="inline-flex items-center rounded bg-green-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Enable Selected
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="inline-flex items-center rounded border border-indigo-300 px-3 py-2 text-sm font-medium text-indigo-700 shadow-sm hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       <section className="rounded-lg border border-gray-200 bg-white shadow-sm">
         <header className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
           <div>
@@ -581,6 +879,23 @@ export default function AdminAccountsPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
+                  <th className="px-4 py-3">
+                    {accountsState.status === 'success' && (
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                        checked={
+                          accountsState.data.accounts.length > 0 &&
+                          accountsState.data.accounts.every((account) =>
+                            selectedAccountIds.includes(account.id)
+                          )
+                        }
+                        onChange={(event) =>
+                          toggleSelectAllVisible(event.target.checked, accountsState.data.accounts)
+                        }
+                      />
+                    )}
+                  </th>
                   <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                     Account
                   </th>
@@ -609,8 +924,19 @@ export default function AdminAccountsPage() {
                     dialog.submitting &&
                     dialog.account.id === account.id;
                   const isBreakGlassBusy = dialog?.mode === 'breakglass' && dialog.submitting;
+                  const isSelected = selectedAccountIds.includes(account.id);
                   return (
                     <tr key={account.id} className="align-top">
+                      <td className="px-4 py-4">
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                          checked={isSelected}
+                          onChange={(event) =>
+                            toggleAccountSelection(account.id, event.target.checked)
+                          }
+                        />
+                      </td>
                       <td className="px-6 py-4 text-sm text-gray-900">
                         <div className="font-medium">{account.name}</div>
                         <div className="font-mono text-xs text-gray-500">{account.id}</div>
@@ -645,6 +971,11 @@ export default function AdminAccountsPage() {
                           >
                             {account.is_disabled ? 'Disabled' : 'Active'}
                           </span>
+                          {account.has_active_break_glass && (
+                            <span className="ml-2 inline-flex items-center rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-medium text-indigo-800">
+                              Break Glass Active
+                            </span>
+                          )}
                         </div>
                         {account.disabled_at && (
                           <p className="mt-2 text-xs text-gray-500">
@@ -795,6 +1126,125 @@ export default function AdminAccountsPage() {
                     className="inline-flex items-center rounded bg-green-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {dialog.submitting ? 'Enabling…' : 'Enable Account'}
+                  </button>
+                </div>
+              </>
+            ) : dialog.mode === 'bulkDisable' ? (
+              <>
+                <h3 className="text-lg font-semibold text-gray-900">Disable Accounts</h3>
+                <p className="mt-2 text-sm text-gray-600">
+                  Provide a reason. Up to 10 accounts will be disabled and logged with a single entry.
+                </p>
+                <div className="mt-4 rounded border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-sm font-medium text-gray-900">Accounts</p>
+                  <p className="text-xs text-gray-600">{dialog.accountIds.join(', ')}</p>
+                </div>
+                <label className="mt-4 block text-sm font-medium text-gray-700">
+                  Reason
+                  <textarea
+                    value={dialog.reason}
+                    onChange={(event) =>
+                      setDialog((prev) =>
+                        prev && prev.mode === 'bulkDisable'
+                          ? { ...prev, reason: event.target.value }
+                          : prev
+                      )
+                    }
+                    rows={3}
+                    placeholder="Describe why these accounts are being disabled…"
+                    className="mt-1 w-full rounded border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    disabled={dialog.submitting}
+                  />
+                </label>
+                {dialog.error && (
+                  <p className="mt-3 text-sm text-red-600">{dialog.error}</p>
+                )}
+                {dialog.result && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-sm text-gray-700">
+                      Succeeded: {dialog.result.succeeded.length} • Failed: {dialog.result.failed.length}
+                    </p>
+                    {dialog.result.failed.length > 0 && (
+                      <ul className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                        {dialog.result.failed.map((item) => (
+                          <li key={item.accountId}>
+                            {item.accountId}: {item.error}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearSelection();
+                      closeDialog();
+                    }}
+                    disabled={dialog.submitting}
+                    className="inline-flex items-center rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitBulkDisable}
+                    disabled={dialog.submitting}
+                    className="inline-flex items-center rounded bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {dialog.submitting ? 'Disabling…' : 'Disable Accounts'}
+                  </button>
+                </div>
+              </>
+            ) : dialog.mode === 'bulkEnable' ? (
+              <>
+                <h3 className="text-lg font-semibold text-gray-900">Enable Accounts</h3>
+                <p className="mt-2 text-sm text-gray-600">
+                  Restore access for the selected accounts. Up to 10 accounts per operation.
+                </p>
+                <div className="mt-4 rounded border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-sm font-medium text-gray-900">Accounts</p>
+                  <p className="text-xs text-gray-600">{dialog.accountIds.join(', ')}</p>
+                </div>
+                {dialog.error && (
+                  <p className="mt-3 text-sm text-red-600">{dialog.error}</p>
+                )}
+                {dialog.result && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-sm text-gray-700">
+                      Succeeded: {dialog.result.succeeded.length} • Failed: {dialog.result.failed.length}
+                    </p>
+                    {dialog.result.failed.length > 0 && (
+                      <ul className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+                        {dialog.result.failed.map((item) => (
+                          <li key={item.accountId}>
+                            {item.accountId}: {item.error}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      clearSelection();
+                      closeDialog();
+                    }}
+                    disabled={dialog.submitting}
+                    className="inline-flex items-center rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    onClick={submitBulkEnable}
+                    disabled={dialog.submitting}
+                    className="inline-flex items-center rounded bg-green-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {dialog.submitting ? 'Enabling…' : 'Enable Accounts'}
                   </button>
                 </div>
               </>

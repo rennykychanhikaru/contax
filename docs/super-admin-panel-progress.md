@@ -33,7 +33,7 @@ Living tracker derived from `/docs/PRD-super-admin-panel.md`. Update this doc wh
   - [x] Record admin actions in audit log with metadata
   - [x] Display account status, disabled timestamps, and actor
   - [x] Support user-level overrides (break-glass path)
-  - [ ] Add guardrails for bulk operations & rate limits
+  - [x] Add guardrails for bulk operations & rate limits
 - [ ] **Milestone 6 – Observability & Tooling**
   - [ ] Build vitest coverage for critical workflows
   - [ ] Add e2e tests for feature flags and account actions
@@ -57,5 +57,6 @@ Living tracker derived from `/docs/PRD-super-admin-panel.md`. Update this doc wh
 - **20251228:** Added override management endpoints (`app/api/admin/feature-flags/[flagId]/overrides/**`), UI for searching/selecting flags with per-account/user overrides, and a cached `is_feature_enabled` helper (`lib/feature-flags/cache.ts`) used by the guard.
 - **20251228:** Implemented account management APIs (`/api/admin/accounts/**`) and UI with search/filter, disable/enable actions requiring reasons, and audit logging; actor IDs display alongside disable timestamps.
 - **20251228:** Super admins can now provision accounts via `/api/admin/accounts` with UI support (generate/reset owner one-time password, modal UX, and audit logging for `ACCOUNT_CREATED`).
+- **20251228:** Added bulk disable/enable endpoints (`/api/admin/accounts/bulk-disable`, `/api/admin/accounts/bulk-enable`) with guardrails (max 10 per batch, hourly caps) and wired the admin UI with multi-select actions and result summaries.
 - Document answers to Milestone 1 open questions here as they land: approval flow owners/SLA, audit log retention, Zero Trust owner, break-glass accountability, environment drift visibility.
 - Track any scope deviations or follow-up tasks that surface during implementation.

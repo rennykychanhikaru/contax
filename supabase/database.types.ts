@@ -72,6 +72,50 @@ export type Database = {
           },
         ]
       }
+      account_break_glass_overrides: {
+        Row: {
+          account_id: string
+          created_at: string
+          expires_at: string
+          id: string
+          issued_by: string
+          reason: string
+          revoked_at: string | null
+          revoked_by: string | null
+          user_id: string
+        }
+        Insert: {
+          account_id: string
+          created_at?: string
+          expires_at: string
+          id?: string
+          issued_by: string
+          reason: string
+          revoked_at?: string | null
+          revoked_by?: string | null
+          user_id: string
+        }
+        Update: {
+          account_id?: string
+          created_at?: string
+          expires_at?: string
+          id?: string
+          issued_by?: string
+          reason?: string
+          revoked_at?: string | null
+          revoked_by?: string | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_break_glass_overrides_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       accounts: {
         Row: {
           created_at: string
@@ -1048,6 +1092,13 @@ export type Database = {
           target_account_id: string
           reason: string
           admin_user_id: string
+        }
+        Returns: boolean
+      }
+      has_break_glass_access: {
+        Args: {
+          p_account_id: string
+          p_user_id: string
         }
         Returns: boolean
       }
@@ -2124,4 +2175,3 @@ export type CompositeTypes<
   : PublicCompositeTypeNameOrOptions extends keyof PublicSchema["CompositeTypes"]
     ? PublicSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
     : never
-

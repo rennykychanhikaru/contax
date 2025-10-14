@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
-
-type QueryStringBoolean = 'true' | 'false';
+import type { Database } from '@/supabase/database.types';
 
 export async function GET(req: NextRequest) {
   const authResult = await requireSuperAdmin(req);
@@ -16,9 +15,16 @@ export async function GET(req: NextRequest) {
     Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10))
   );
   const search = url.searchParams.get('search')?.trim();
-  const status = url.searchParams.get('isDisabled') as QueryStringBoolean | null;
+  const statusParam = url.searchParams.get('status')?.toLowerCase();
+  const legacyStatus = url.searchParams.get('isDisabled');
+  const superAdminParam = url.searchParams.get('superAdmin');
+  const createdAfterParam = url.searchParams.get('createdAfter');
+  const createdBeforeParam = url.searchParams.get('createdBefore');
+  const hasBreakGlassParam = url.searchParams.get('hasBreakGlass');
 
   const admin = getAdminClient();
+
+  const fetchEnd = Math.min(page * limit + limit * 3, 500) - 1;
 
   let query = admin
     .from('accounts')
@@ -37,34 +43,93 @@ export async function GET(req: NextRequest) {
           user_id,
           email,
           role
-        )
+        ),
+        break_glass_overrides:account_break_glass_overrides(id, expires_at, revoked_at)
       `,
       { count: 'exact' }
     )
-    .range((page - 1) * limit, page * limit - 1)
+    .range(0, fetchEnd)
     .order('created_at', { ascending: false });
 
   if (search) {
     query = query.ilike('name', `%${search}%`);
   }
 
-  if (status === 'true' || status === 'false') {
-    query = query.eq('is_disabled', status === 'true');
+  if (statusParam === 'active') {
+    query = query.eq('is_disabled', false);
+  } else if (statusParam === 'disabled') {
+    query = query.eq('is_disabled', true);
+  } else if (legacyStatus === 'true' || legacyStatus === 'false') {
+    query = query.eq('is_disabled', legacyStatus === 'true');
   }
 
-  const { data, error, count } = await query;
+  if (superAdminParam === 'true') {
+    query = query.eq('is_super_admin', true);
+  } else if (superAdminParam === 'false') {
+    query = query.eq('is_super_admin', false);
+  }
+
+  if (createdAfterParam) {
+    const parsed = new Date(createdAfterParam);
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json({ error: 'Invalid createdAfter date' }, { status: 400 });
+    }
+    query = query.gte('created_at', parsed.toISOString());
+  }
+
+  if (createdBeforeParam) {
+    const parsed = new Date(createdBeforeParam);
+    if (Number.isNaN(parsed.getTime())) {
+      return NextResponse.json({ error: 'Invalid createdBefore date' }, { status: 400 });
+    }
+    parsed.setUTCHours(23, 59, 59, 999);
+    query = query.lte('created_at', parsed.toISOString());
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  type AccountRow = Database['public']['Tables']['accounts']['Row'] & {
+    account_user: Database['public']['Tables']['account_user']['Row'][] | null;
+    break_glass_overrides?: Array<{
+      id: string;
+      expires_at: string;
+      revoked_at: string | null;
+    }>;
+  };
+
+  const accountsWithFlags =
+    (data as AccountRow[] | null)?.map(({ break_glass_overrides, ...rest }) => {
+      const overrides = break_glass_overrides ?? [];
+      const hasActiveBreakGlass = overrides.some(
+        (override) =>
+          (!override.revoked_at || override.revoked_at === null) &&
+          new Date(override.expires_at).getTime() > Date.now()
+      );
+      return { ...rest, has_active_break_glass: hasActiveBreakGlass };
+    }) ?? [];
+
+  let filteredAccounts = accountsWithFlags;
+
+  if (hasBreakGlassParam === 'true') {
+    filteredAccounts = filteredAccounts.filter((account) => account.has_active_break_glass);
+  } else if (hasBreakGlassParam === 'false') {
+    filteredAccounts = filteredAccounts.filter((account) => !account.has_active_break_glass);
+  }
+
+  const offset = (page - 1) * limit;
+  const paginatedAccounts = filteredAccounts.slice(offset, offset + limit);
+
   return NextResponse.json({
-    accounts: data ?? [],
+    accounts: paginatedAccounts,
     pagination: {
       page,
       limit,
-      total: count ?? 0,
-      totalPages: count ? Math.ceil(count / limit) : 0,
+      total: filteredAccounts.length,
+      totalPages: Math.ceil(filteredAccounts.length / limit),
     },
   });
 }
