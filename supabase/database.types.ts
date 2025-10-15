@@ -714,6 +714,57 @@ export type Database = {
         }
         Relationships: []
       }
+      feature_flag_usage_events: {
+        Row: {
+          account_id: string | null
+          evaluated_at: string
+          feature_flag_id: string | null
+          flag_key: string
+          id: string
+          metadata: Json | null
+          source: string
+          user_id: string | null
+          was_enabled: boolean
+        }
+        Insert: {
+          account_id?: string | null
+          evaluated_at?: string
+          feature_flag_id?: string | null
+          flag_key: string
+          id?: string
+          metadata?: Json | null
+          source?: string
+          user_id?: string | null
+          was_enabled: boolean
+        }
+        Update: {
+          account_id?: string | null
+          evaluated_at?: string
+          feature_flag_id?: string | null
+          flag_key?: string
+          id?: string
+          metadata?: Json | null
+          source?: string
+          user_id?: string | null
+          was_enabled?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "feature_flag_usage_events_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "feature_flag_usage_events_feature_flag_id_fkey"
+            columns: ["feature_flag_id"]
+            isOneToOne: false
+            referencedRelation: "feature_flags"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       organization_members: {
         Row: {
           created_at: string | null
@@ -1028,6 +1079,15 @@ export type Database = {
       }
     }
     Views: {
+      feature_flag_usage_summary: {
+        Row: {
+          bucket: string | null
+          enabled_checks: number | null
+          flag_key: string | null
+          total_checks: number | null
+        }
+        Relationships: []
+      }
       organization_demo_agents: {
         Row: {
           agent_type: string | null

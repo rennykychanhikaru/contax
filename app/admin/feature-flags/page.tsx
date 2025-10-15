@@ -53,6 +53,15 @@ const initialOverrideForm = {
   is_enabled: true,
 };
 
+type FeatureFlagAnalyticsPoint = {
+  flag_key: string | null;
+  bucket: string | null;
+  total_checks: number | null;
+  enabled_checks: number | null;
+};
+
+const analyticsDayOptions = [7, 30, 90] as const;
+
 export default function AdminFeatureFlagsPage() {
   const [flagsState, setFlagsState] = useState<FetchState<FeatureFlag[]>>({ status: 'idle' });
   const [overridesState, setOverridesState] =
@@ -65,6 +74,10 @@ export default function AdminFeatureFlagsPage() {
   const [overrideSubmitError, setOverrideSubmitError] = useState<string | null>(null);
   const [isCreatingFlag, setIsCreatingFlag] = useState(false);
   const [isCreatingOverride, setIsCreatingOverride] = useState(false);
+  const [analyticsState, setAnalyticsState] =
+    useState<FetchState<FeatureFlagAnalyticsPoint[]>>({ status: 'idle' });
+  const [analyticsDays, setAnalyticsDays] =
+    useState<(typeof analyticsDayOptions)[number]>(30);
 
   const fetchFlags = useCallback(async () => {
     setFlagsState({ status: 'loading' });
@@ -97,6 +110,8 @@ export default function AdminFeatureFlagsPage() {
     if (flagsState.status !== 'success' || !selectedFlagId) return null;
     return flagsState.data.find((flag) => flag.id === selectedFlagId) ?? null;
   }, [flagsState, selectedFlagId]);
+
+  const selectedFlagKey = selectedFlag?.flag_key ?? null;
 
   const filteredFlags = useMemo(() => {
     if (flagsState.status !== 'success') return [];
@@ -132,6 +147,34 @@ export default function AdminFeatureFlagsPage() {
     }
   }, []);
 
+  const fetchAnalytics = useCallback(async (flagKey: string, days: number) => {
+    setAnalyticsState({ status: 'loading' });
+    try {
+      const params = new URLSearchParams({
+        flagKey,
+        days: String(days),
+      });
+      const res = await fetch(`/api/admin/feature-flags/analytics?${params.toString()}`, {
+        cache: 'no-store',
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(
+          payload?.error ? String(payload.error) : 'Failed to load analytics for this flag'
+        );
+      }
+      const summary = Array.isArray(payload?.summary)
+        ? (payload.summary as FeatureFlagAnalyticsPoint[])
+        : [];
+      setAnalyticsState({ status: 'success', data: summary });
+    } catch (error) {
+      setAnalyticsState({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Unexpected error',
+      });
+    }
+  }, []);
+
   useEffect(() => {
     if (selectedFlagId) {
       fetchOverrides(selectedFlagId);
@@ -139,6 +182,40 @@ export default function AdminFeatureFlagsPage() {
       setOverridesState({ status: 'idle' });
     }
   }, [selectedFlagId, fetchOverrides]);
+
+  useEffect(() => {
+    if (!selectedFlagKey) {
+      setAnalyticsState({ status: 'idle' });
+      return;
+    }
+    fetchAnalytics(selectedFlagKey, analyticsDays);
+  }, [selectedFlagKey, analyticsDays, fetchAnalytics]);
+
+  const analyticsTotals = useMemo(() => {
+    if (analyticsState.status !== 'success') {
+      return null;
+    }
+    return analyticsState.data.reduce(
+      (acc, point) => {
+        const total = point.total_checks ?? 0;
+        const enabled = point.enabled_checks ?? 0;
+        return {
+          total: acc.total + total,
+          enabled: acc.enabled + enabled,
+        };
+      },
+      { total: 0, enabled: 0 }
+    );
+  }, [analyticsState]);
+
+  const disabledTotal = analyticsTotals
+    ? Math.max(analyticsTotals.total - analyticsTotals.enabled, 0)
+    : 0;
+
+  const handleAnalyticsRetry = useCallback(() => {
+    if (!selectedFlagKey) return;
+    fetchAnalytics(selectedFlagKey, analyticsDays);
+  }, [selectedFlagKey, analyticsDays, fetchAnalytics]);
 
   const handleCreateFlag = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -573,6 +650,130 @@ export default function AdminFeatureFlagsPage() {
               </button>
             </div>
           </form>
+
+          <div className="rounded border border-gray-100 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-medium text-gray-900">Usage analytics</h4>
+                <p className="text-xs text-gray-500">
+                  Evaluations recorded during the past {analyticsDays} days.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={analyticsDays}
+                  onChange={(event) =>
+                    setAnalyticsDays(
+                      Number(event.target.value) as (typeof analyticsDayOptions)[number]
+                    )
+                  }
+                  className="rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                >
+                  {analyticsDayOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option} days
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleAnalyticsRetry}
+                  disabled={analyticsState.status === 'loading'}
+                  className="rounded border border-indigo-200 px-3 py-1 text-xs font-medium text-indigo-600 transition hover:bg-indigo-50 focus:outline-none focus:ring-1 focus:ring-indigo-400 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {analyticsState.status === 'loading' && (
+              <p className="mt-4 text-sm text-gray-500">Loading analytics&hellip;</p>
+            )}
+
+            {analyticsState.status === 'error' && (
+              <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                <p>{analyticsState.message ?? 'Failed to load analytics for this flag.'}</p>
+                <button
+                  type="button"
+                  onClick={handleAnalyticsRetry}
+                  className="mt-3 inline-flex items-center rounded bg-red-600 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-red-700 focus:outline-none focus:ring-1 focus:ring-red-500 focus:ring-offset-1"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+
+            {analyticsState.status === 'success' && analyticsState.data.length === 0 && (
+              <p className="mt-4 text-sm text-gray-500">
+                No usage recorded for this feature flag in the selected window.
+              </p>
+            )}
+
+            {analyticsState.status === 'success' && analyticsState.data.length > 0 && (
+              <>
+                <dl className="mt-4 grid gap-3 sm:grid-cols-3">
+                  <div className="rounded bg-indigo-50 p-3">
+                    <dt className="text-xs uppercase text-indigo-800">Total checks</dt>
+                    <dd className="text-lg font-semibold text-indigo-900">
+                      {analyticsTotals?.total ?? 0}
+                    </dd>
+                  </div>
+                  <div className="rounded bg-green-50 p-3">
+                    <dt className="text-xs uppercase text-green-800">Enabled</dt>
+                    <dd className="text-lg font-semibold text-green-900">
+                      {analyticsTotals?.enabled ?? 0}
+                    </dd>
+                  </div>
+                  <div className="rounded bg-gray-100 p-3">
+                    <dt className="text-xs uppercase text-gray-600">Disabled</dt>
+                    <dd className="text-lg font-semibold text-gray-800">{disabledTotal}</dd>
+                  </div>
+                </dl>
+
+                <div className="mt-4 overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                          Date
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                          Total
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                          Enabled
+                        </th>
+                        <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                          Disabled
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100 bg-white">
+                      {analyticsState.data.map((point) => {
+                        const total = point.total_checks ?? 0;
+                        const enabled = point.enabled_checks ?? 0;
+                        const disabled = Math.max(total - enabled, 0);
+                        const key = `${point.flag_key ?? selectedFlag.flag_key}-${
+                          point.bucket ?? 'bucket'
+                        }`;
+                        const dateLabel = point.bucket
+                          ? new Date(point.bucket).toLocaleDateString()
+                          : '—';
+                        return (
+                          <tr key={key}>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-600">{dateLabel}</td>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-900">{total}</td>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-900">{enabled}</td>
+                            <td className="whitespace-nowrap px-3 py-2 text-gray-900">{disabled}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
 
           <div className="rounded border border-gray-100">
             <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">

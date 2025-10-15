@@ -1,0 +1,361 @@
+openapi: 3.1.0
+info:
+  title: Super Admin Panel API
+  version: 0.1.0
+  description: >
+    Private endpoints backing the super admin panel. All routes require a valid
+    Supabase session cookie and super-admin privileges. Rate limiting, MFA, and
+    feature-flag gating are enforced server-side.
+servers:
+  - url: https://app.getconvo.ai
+    description: Production
+  - url: https://staging.getconvo.ai
+    description: Staging
+  - url: http://127.0.0.1:3000
+    description: Local development
+components:
+  securitySchemes:
+    supabaseSession:
+      type: apiKey
+      in: cookie
+      name: sb-access-token
+  parameters:
+    paginationLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Maximum number of records to return.
+    paginationPage:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: Results page to fetch.
+    startDate:
+      name: start
+      in: query
+      schema:
+        type: string
+        format: date
+      description: UTC start date filter (inclusive).
+    endDate:
+      name: end
+      in: query
+      schema:
+        type: string
+        format: date
+      description: UTC end date filter (inclusive).
+security:
+  - supabaseSession: []
+paths:
+  /api/admin/check-access:
+    get:
+      summary: Validate super-admin access
+      description: >
+        Confirms the caller holds a valid Supabase session, has completed step-up MFA,
+        and belongs to an account flagged `is_super_admin`.
+      responses:
+        '200':
+          description: The caller is authorized for admin access.
+        '401':
+          description: Session missing or expired.
+        '403':
+          description: Step-up MFA required or user lacks permissions.
+        '404':
+          description: Super-admin panel feature flag disabled.
+  /api/admin/accounts:
+    get:
+      summary: List accounts
+      description: >
+        Returns accounts visible to super admins with filtering for status, super-admin flag,
+        creation windows, and active break-glass overrides.
+      parameters:
+        - $ref: '#/components/parameters/paginationLimit'
+        - $ref: '#/components/parameters/paginationPage'
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Case-insensitive match against account name.
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, disabled]
+        - name: superAdmin
+          in: query
+          schema:
+            type: boolean
+          description: Filter by super-admin designation.
+        - name: hasBreakGlass
+          in: query
+          schema:
+            type: boolean
+          description: Filter for accounts with active break-glass overrides.
+        - name: createdAfter
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: createdBefore
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Paginated accounts response.
+        '400':
+          description: Invalid filter parameter.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase error.
+    post:
+      summary: Create new account
+      description: >
+        Creates an organization, seeds default settings, and provisions/updates an owner user with a temporary password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, ownerEmail]
+              properties:
+                name:
+                  type: string
+                ownerEmail:
+                  type: string
+                  format: email
+                temporaryPassword:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Account created; returns details and one-time password.
+        '400':
+          description: Validation error or user already assigned to another organization.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/accounts/{accountId}/disable:
+    post:
+      summary: Disable an account
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: Account disabled.
+        '400':
+          description: Missing reason.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/accounts/{accountId}/enable:
+    post:
+      summary: Enable an account
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Account enabled.
+        '401':
+          description: Unauthorized.
+        '404':
+          description: Account not found.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/feature-flags:
+    get:
+      summary: List feature flags
+      responses:
+        '200':
+          description: Flag list.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+    post:
+      summary: Create feature flag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flag_key, flag_name, target_type]
+              properties:
+                flag_key:
+                  type: string
+                flag_name:
+                  type: string
+                description:
+                  type: string
+                target_type:
+                  type: string
+                  enum: [global, account, user]
+                is_enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Flag created.
+        '400':
+          description: Validation error.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/feature-flags/{flagId}:
+    patch:
+      summary: Update feature flag
+      parameters:
+        - name: flagId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                flag_name:
+                  type: string
+                description:
+                  type: string
+                  nullable: true
+                is_enabled:
+                  type: boolean
+                target_type:
+                  type: string
+                  enum: [global, account, user]
+      responses:
+        '200':
+          description: Flag updated.
+        '400':
+          description: No valid fields provided or invalid target type.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+    delete:
+      summary: Delete feature flag
+      parameters:
+        - name: flagId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Flag deleted.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/feature-flags/analytics:
+    get:
+      summary: Feature flag usage analytics
+      parameters:
+        - name: flagKey
+          in: query
+          schema:
+            type: string
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 180
+            default: 30
+      responses:
+        '200':
+          description: Daily aggregates.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/notifications:
+    get:
+      summary: Recent admin audit events
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+            default: 5
+      responses:
+        '200':
+          description: Audit events payload.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.
+  /api/admin/audit/export:
+    get:
+      summary: Export admin audit log (CSV)
+      parameters:
+        - $ref: '#/components/parameters/startDate'
+        - $ref: '#/components/parameters/endDate'
+        - name: actionType
+          in: query
+          schema:
+            type: string
+        - name: adminUserId
+          in: query
+          schema:
+            type: string
+        - name: targetType
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CSV payload.
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: Invalid date filter.
+        '401':
+          description: Unauthorized.
+        '500':
+          description: Supabase/internal error.

@@ -63,6 +63,19 @@ export async function PATCH(req: NextRequest, { params }: { params: { flagId: st
     return NextResponse.json({ error: auditError.message }, { status: 500 });
   }
 
+  const { error: analyticsError } = await admin.from('feature_flag_usage_events').insert({
+    feature_flag_id: data.id,
+    flag_key: data.flag_key,
+    user_id: authResult.userId,
+    was_enabled: data.is_enabled,
+    source: 'admin:update',
+    metadata: allowedUpdates,
+  });
+
+  if (analyticsError) {
+    return NextResponse.json({ error: analyticsError.message }, { status: 500 });
+  }
+
   return NextResponse.json({ flag: data });
 }
 
