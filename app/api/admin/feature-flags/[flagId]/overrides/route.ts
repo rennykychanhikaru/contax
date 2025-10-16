@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 type SupabaseOverrideRow = {
   id: string;
@@ -47,10 +48,10 @@ async function enrichOverrides(rows: SupabaseOverrideRow[]) {
   }));
 }
 
-export async function GET(
+export const GET = withAdminTelemetry('GET /api/admin/feature-flags/[flagId]/overrides', async (
   req: NextRequest,
   { params }: { params: { flagId: string } }
-) {
+) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -63,25 +64,38 @@ export async function GET(
     .order('created_at', { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag',
+      targetId: params.flagId,
+    });
   }
 
   const overrides = await enrichOverrides(data ?? []);
 
-  return NextResponse.json({ overrides });
-}
+  return respondWithTelemetry(NextResponse.json({ overrides }), {
+    adminUserId: authResult.userId,
+    targetType: 'feature_flag',
+    targetId: params.flagId,
+    metadata: { total: overrides.length },
+  });
+});
 
-export async function POST(
+export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/overrides', async (
   req: NextRequest,
   { params }: { params: { flagId: string } }
-) {
+) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
   const payload = await req.json().catch(() => null);
 
   if (!payload || typeof payload !== 'object') {
-    return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Invalid body' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag',
+      targetId: params.flagId,
+    });
   }
 
   const {
@@ -97,11 +111,22 @@ export async function POST(
   } = payload;
 
   if (!target_type || (target_type !== 'account' && target_type !== 'user')) {
-    return NextResponse.json({ error: 'target_type must be account or user' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'target_type must be account or user' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag',
+      targetId: params.flagId,
+    });
   }
 
   if (typeof is_enabled !== 'boolean') {
-    return NextResponse.json({ error: 'is_enabled must be provided as boolean' }, { status: 400 });
+    return respondWithTelemetry(
+      NextResponse.json({ error: 'is_enabled must be provided as boolean' }, { status: 400 }),
+      {
+        adminUserId: authResult.userId,
+        targetType: 'feature_flag',
+        targetId: params.flagId,
+      }
+    );
   }
 
   const admin = getAdminClient();
@@ -110,7 +135,14 @@ export async function POST(
 
   if (target_type === 'account') {
     if (!target_id) {
-      return NextResponse.json({ error: 'target_id is required for account overrides' }, { status: 400 });
+      return respondWithTelemetry(
+        NextResponse.json({ error: 'target_id is required for account overrides' }, { status: 400 }),
+        {
+          adminUserId: authResult.userId,
+          targetType: 'feature_flag',
+          targetId: params.flagId,
+        }
+      );
     }
     accountId = target_id;
   } else {
@@ -119,17 +151,30 @@ export async function POST(
     } else if (target_email) {
       const { data: users, error } = await admin.auth.admin.listUsers({ email: target_email, perPage: 1 });
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+          adminUserId: authResult.userId,
+          targetType: 'feature_flag',
+          targetId: params.flagId,
+          metadata: { stage: 'fetch_user' },
+        });
       }
       const match = users.users.find((entry) => entry.email?.toLowerCase() === target_email.toLowerCase());
       if (!match) {
-        return NextResponse.json({ error: 'User not found for provided email' }, { status: 404 });
+        return respondWithTelemetry(NextResponse.json({ error: 'User not found for provided email' }, { status: 404 }), {
+          adminUserId: authResult.userId,
+          targetType: 'feature_flag',
+          targetId: params.flagId,
+        });
       }
       userId = match.id;
     } else {
-      return NextResponse.json(
-        { error: 'Provide target_id or target_email for user overrides' },
-        { status: 400 }
+      return respondWithTelemetry(
+        NextResponse.json({ error: 'Provide target_id or target_email for user overrides' }, { status: 400 }),
+        {
+          adminUserId: authResult.userId,
+          targetType: 'feature_flag',
+          targetId: params.flagId,
+        }
       );
     }
   }
@@ -152,7 +197,11 @@ export async function POST(
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag',
+      targetId: params.flagId,
+    });
   }
 
   await admin.from('admin_audit_log').insert({
@@ -171,5 +220,14 @@ export async function POST(
 
   const enriched = await enrichOverrides([data]);
 
-  return NextResponse.json({ override: enriched[0] });
-}
+  return respondWithTelemetry(NextResponse.json({ override: enriched[0] }), {
+    adminUserId: authResult.userId,
+    targetType: 'feature_flag',
+    targetId: params.flagId,
+    metadata: {
+      account_id: accountId,
+      user_id: userId,
+      is_enabled,
+    },
+  });
+});

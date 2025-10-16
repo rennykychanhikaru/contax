@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 type BreakGlassRow = {
   id: string;
@@ -12,10 +13,10 @@ type BreakGlassRow = {
   revoked_at: string | null;
 };
 
-export async function DELETE(
+export const DELETE = withAdminTelemetry('DELETE /api/admin/accounts/[accountId]/break-glass/[overrideId]', async (
   req: NextRequest,
   context: { params: Promise<{ accountId: string; overrideId: string }> }
-) {
+) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -30,15 +31,30 @@ export async function DELETE(
     .maybeSingle();
 
   if (fetchError) {
-    return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: fetchError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { overrideId },
+    });
   }
 
   if (!override || override.account_id !== accountId) {
-    return NextResponse.json({ error: 'Override not found' }, { status: 404 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Override not found' }, { status: 404 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { overrideId },
+    });
   }
 
   if (override.revoked_at) {
-    return NextResponse.json({ success: true });
+    return respondWithTelemetry(NextResponse.json({ success: true }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { overrideId, already_revoked: true },
+    });
   }
 
   const { error: revokeError } = await admin
@@ -50,7 +66,12 @@ export async function DELETE(
     .eq('id', overrideId);
 
   if (revokeError) {
-    return NextResponse.json({ error: revokeError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: revokeError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { overrideId },
+    });
   }
 
   await admin.from('admin_audit_log').insert({
@@ -65,5 +86,10 @@ export async function DELETE(
     },
   });
 
-  return NextResponse.json({ success: true });
-}
+  return respondWithTelemetry(NextResponse.json({ success: true }), {
+    adminUserId: authResult.userId,
+    targetType: 'account',
+    targetId: accountId,
+    metadata: { overrideId, target_user_id: override.user_id },
+  });
+});

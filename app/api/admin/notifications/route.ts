@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { createClient } from '@/lib/supabase/server';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 const DEFAULT_LIMIT = 5;
 
-export async function GET(req: NextRequest) {
+export const GET = withAdminTelemetry('GET /api/admin/notifications', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
-  if (authResult instanceof NextResponse) return authResult;
+  if (authResult instanceof NextResponse) {
+    return authResult;
+  }
 
   const supabase = await createClient();
   const url = new URL(req.url);
@@ -20,8 +23,14 @@ export async function GET(req: NextRequest) {
     .limit(limit);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      metadata: { limit },
+    });
   }
 
-  return NextResponse.json({ events: data ?? [] });
-}
+  return respondWithTelemetry(NextResponse.json({ events: data ?? [] }), {
+    adminUserId: authResult.userId,
+    metadata: { limit },
+  });
+});

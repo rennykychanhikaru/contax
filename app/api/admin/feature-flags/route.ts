@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 const TARGET_TYPES = new Set(['global', 'account', 'user']);
 
-export async function GET(req: NextRequest) {
+export const GET = withAdminTelemetry('GET /api/admin/feature-flags', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -15,28 +16,41 @@ export async function GET(req: NextRequest) {
     .order('flag_name', { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+    });
   }
 
-  return NextResponse.json({ flags: data });
-}
+  return respondWithTelemetry(NextResponse.json({ flags: data }), {
+    adminUserId: authResult.userId,
+    metadata: { total: data?.length ?? 0 },
+  });
+});
 
-export async function POST(req: NextRequest) {
+export const POST = withAdminTelemetry('POST /api/admin/feature-flags', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
   const payload = await req.json().catch(() => null);
 
   if (!payload || typeof payload !== 'object') {
-    return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Invalid body' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+    });
   }
 
   const { flag_key, flag_name, description, target_type = 'global', is_enabled = false } = payload;
 
   if (!flag_key || !flag_name || !TARGET_TYPES.has(target_type)) {
-    return NextResponse.json(
-      { error: 'flag_key, flag_name, and valid target_type are required' },
-      { status: 400 }
+    return respondWithTelemetry(
+      NextResponse.json(
+        { error: 'flag_key, flag_name, and valid target_type are required' },
+        { status: 400 }
+      ),
+      {
+        adminUserId: authResult.userId,
+        metadata: { flag_key, flag_name, target_type },
+      }
     );
   }
 
@@ -55,7 +69,10 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      metadata: { flag_key, flag_name, target_type },
+    });
   }
 
   const { error: auditError } = await admin.from('admin_audit_log').insert({
@@ -67,7 +84,12 @@ export async function POST(req: NextRequest) {
   });
 
   if (auditError) {
-    return NextResponse.json({ error: auditError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: auditError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag',
+      targetId: data.id,
+      metadata: { flag_key },
+    });
   }
 
   const { error: analyticsError } = await admin.from('feature_flag_usage_events').insert({
@@ -80,8 +102,18 @@ export async function POST(req: NextRequest) {
   });
 
   if (analyticsError) {
-    return NextResponse.json({ error: analyticsError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: analyticsError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag',
+      targetId: data.id,
+      metadata: { flag_key: data.flag_key },
+    });
   }
 
-  return NextResponse.json({ flag: data });
-}
+  return respondWithTelemetry(NextResponse.json({ flag: data }), {
+    adminUserId: authResult.userId,
+    targetType: 'feature_flag',
+    targetId: data.id,
+    metadata: { flag_key: data.flag_key },
+  });
+});

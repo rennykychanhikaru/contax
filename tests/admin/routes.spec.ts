@@ -5,6 +5,7 @@ import { PATCH as patchFeatureFlag, DELETE as deleteFeatureFlag } from '@/app/ap
 import { GET as getNotifications } from '@/app/api/admin/notifications/route';
 import { GET as exportAuditLog } from '@/app/api/admin/audit/export/route';
 import { GET as getAccounts, POST as createAccount } from '@/app/api/admin/accounts/route';
+import { GET as getDashboardUsage } from '@/app/api/admin/dashboard/usage/route';
 
 type SupabaseResult = {
   data: unknown;
@@ -502,6 +503,62 @@ describe('accounts route', () => {
       error: 'User already belongs to an organization. Invite them instead.',
     });
     expect(adminAuth.createUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('dashboard usage route', () => {
+  it('aggregates usage metrics', async () => {
+    setSupabaseResult('admin_account_usage_summary', {
+      data: [
+        {
+          account_id: 'acct-1',
+          name: 'Acme',
+          total_calls: 20,
+          last_7d_calls: 5,
+          last_30d_calls: 15,
+          last_call_at: '2025-12-29T10:00:00.000Z',
+        },
+        {
+          account_id: 'acct-2',
+          name: 'Globex',
+          total_calls: 5,
+          last_7d_calls: 2,
+          last_30d_calls: 3,
+          last_call_at: '2025-12-27T12:00:00.000Z',
+        },
+      ],
+      error: null,
+    });
+
+    const response = await getDashboardUsage(
+      new Request('http://localhost/api/admin/dashboard/usage') as unknown as Request
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      totals: { totalCalls: number; last7DaysCalls: number; last30DaysCalls: number; activeAccounts: number };
+      topAccounts: Array<{ accountId: string; accountName: string; last30DaysCalls: number; totalCalls: number }>;
+    };
+
+    expect(body.totals.totalCalls).toBe(25);
+    expect(body.totals.last7DaysCalls).toBe(7);
+    expect(body.totals.last30DaysCalls).toBe(18);
+    expect(body.totals.activeAccounts).toBe(2);
+    expect(body.topAccounts[0].accountName).toBe('Acme');
+    expect(body.topAccounts[0].last30DaysCalls).toBe(15);
+  });
+
+  it('surfaces errors from Supabase', async () => {
+    setSupabaseResult('admin_account_usage_summary', {
+      data: null,
+      error: { message: 'usage error' },
+    });
+
+    const response = await getDashboardUsage(
+      new Request('http://localhost/api/admin/dashboard/usage') as unknown as Request
+    );
+
+    expect(response.status).toBe(500);
   });
 });
 

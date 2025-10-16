@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
-export async function POST(
+export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/disable', async (
   req: NextRequest,
   { params }: { params: { accountId: string } }
-) {
+) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -13,7 +14,11 @@ export async function POST(
   const reason = typeof payload?.reason === 'string' ? payload.reason.trim() : '';
 
   if (!reason) {
-    return NextResponse.json({ error: 'Reason is required' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Reason is required' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: params.accountId,
+    });
   }
 
   const admin = getAdminClient();
@@ -25,8 +30,17 @@ export async function POST(
   });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: params.accountId,
+    });
   }
 
-  return NextResponse.json({ success: true });
-}
+  return respondWithTelemetry(NextResponse.json({ success: true }), {
+    adminUserId: authResult.userId,
+    targetType: 'account',
+    targetId: params.accountId,
+    metadata: { reason },
+  });
+});

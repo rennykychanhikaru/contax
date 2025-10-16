@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 const MAX_ACCOUNTS_PER_BATCH = 10;
 const MAX_BULK_ACTIONS_PER_HOUR = 3;
@@ -22,7 +23,7 @@ function recordBulkAction(userId: string) {
   return filtered.length;
 }
 
-export async function POST(req: NextRequest) {
+export const POST = withAdminTelemetry('POST /api/admin/accounts/bulk-disable', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -30,7 +31,11 @@ export async function POST(req: NextRequest) {
   try {
     payload = (await req.json()) as BulkDisablePayload;
   } catch {
-    return NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Invalid JSON payload' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account_bulk_disable',
+      metadata: { stage: 'validate_payload' },
+    });
   }
 
   const accountIds = Array.isArray(payload.accountIds)
@@ -38,26 +43,41 @@ export async function POST(req: NextRequest) {
     : [];
 
   if (accountIds.length === 0) {
-    return NextResponse.json({ error: 'accountIds array is required' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'accountIds array is required' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account_bulk_disable',
+    });
   }
 
   if (accountIds.length > MAX_ACCOUNTS_PER_BATCH) {
-    return NextResponse.json(
-      { error: `Cannot disable more than ${MAX_ACCOUNTS_PER_BATCH} accounts per request` },
-      { status: 400 }
+    return respondWithTelemetry(
+      NextResponse.json(
+        { error: `Cannot disable more than ${MAX_ACCOUNTS_PER_BATCH} accounts per request` },
+        { status: 400 }
+      ),
+      {
+        adminUserId: authResult.userId,
+        targetType: 'account_bulk_disable',
+      }
     );
   }
 
   const reason = payload.reason?.trim();
   if (!reason) {
-    return NextResponse.json({ error: 'Reason is required for bulk disable' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Reason is required for bulk disable' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account_bulk_disable',
+    });
   }
 
   const actionCount = recordBulkAction(authResult.userId);
   if (actionCount > MAX_BULK_ACTIONS_PER_HOUR) {
-    return NextResponse.json(
-      { error: `Bulk disable limit exceeded. Try again later.` },
-      { status: 429 }
+    return respondWithTelemetry(
+      NextResponse.json({ error: `Bulk disable limit exceeded. Try again later.` }, { status: 429 }),
+      {
+        adminUserId: authResult.userId,
+        targetType: 'account_bulk_disable',
+      }
     );
   }
 
@@ -107,8 +127,15 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({
-    succeeded,
-    failed,
-  });
-}
+  return respondWithTelemetry(
+    NextResponse.json({
+      succeeded,
+      failed,
+    }),
+    {
+      adminUserId: authResult.userId,
+      targetType: 'account_bulk_disable',
+      metadata: { succeeded: succeeded.length, failed: failed.length },
+    }
+  );
+});

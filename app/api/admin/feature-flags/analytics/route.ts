@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { createClient } from '@/lib/supabase/server';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 const MAX_DAYS = 180;
 
-export async function GET(req: NextRequest) {
+export const GET = withAdminTelemetry('GET /api/admin/feature-flags/analytics', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -29,8 +30,16 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'feature_flag_analytics',
+      metadata: { flagKey, days },
+    });
   }
 
-  return NextResponse.json({ summary: data ?? [] });
-}
+  return respondWithTelemetry(NextResponse.json({ summary: data ?? [] }), {
+    adminUserId: authResult.userId,
+    targetType: 'feature_flag_analytics',
+    metadata: { flagKey, days },
+  });
+});

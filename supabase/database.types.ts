@@ -196,6 +196,81 @@ export type Database = {
         }
         Relationships: []
       }
+      admin_api_aggregates: {
+        Row: {
+          avg_duration_ms: string
+          bucket: string
+          error_count: number
+          method: string
+          path: string
+          p95_duration_ms: string
+          total_requests: number
+        }
+        Insert: {
+          avg_duration_ms: string
+          bucket: string
+          error_count: number
+          method: string
+          path: string
+          p95_duration_ms: string
+          total_requests: number
+        }
+        Update: {
+          avg_duration_ms?: string
+          bucket?: string
+          error_count?: number
+          method?: string
+          path?: string
+          p95_duration_ms?: string
+          total_requests?: number
+        }
+        Relationships: []
+      }
+      admin_api_events: {
+        Row: {
+          admin_user_id: string | null
+          duration_ms: number | null
+          id: string
+          ip_address: string | null
+          metadata: Json | null
+          method: string
+          occurred_at: string
+          path: string
+          status: number
+          target_id: string | null
+          target_type: string | null
+          user_agent: string | null
+        }
+        Insert: {
+          admin_user_id?: string | null
+          duration_ms?: number | null
+          id?: string
+          ip_address?: string | null
+          metadata?: Json | null
+          method: string
+          occurred_at?: string
+          path: string
+          status: number
+          target_id?: string | null
+          target_type?: string | null
+          user_agent?: string | null
+        }
+        Update: {
+          admin_user_id?: string | null
+          duration_ms?: number | null
+          id?: string
+          ip_address?: string | null
+          metadata?: Json | null
+          method?: string
+          occurred_at?: string
+          path?: string
+          status?: number
+          target_id?: string | null
+          target_type?: string | null
+          user_agent?: string | null
+        }
+        Relationships: []
+      }
       agent_calendars: {
         Row: {
           access_role: string | null
@@ -1079,6 +1154,29 @@ export type Database = {
       }
     }
     Views: {
+      admin_api_latency_summary: {
+        Row: {
+          avg_duration_ms: string | null
+          bucket: string | null
+          error_count: number | null
+          method: string | null
+          path: string | null
+          p95_duration_ms: string | null
+          total_requests: number | null
+        }
+        Relationships: []
+      }
+      admin_account_usage_summary: {
+        Row: {
+          account_id: string | null
+          last_30d_calls: number | null
+          last_7d_calls: number | null
+          last_call_at: string | null
+          name: string | null
+          total_calls: number | null
+        }
+        Relationships: []
+      }
       feature_flag_usage_summary: {
         Row: {
           bucket: string | null

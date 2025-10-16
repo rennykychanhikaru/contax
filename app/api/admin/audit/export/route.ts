@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 function formatCsvRow(values: (string | number | null | undefined)[]): string {
   return values
@@ -27,7 +28,7 @@ const HEADER = [
   'created_at',
 ];
 
-export async function GET(req: NextRequest) {
+export const GET = withAdminTelemetry('GET /api/admin/audit/export', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -37,6 +38,12 @@ export async function GET(req: NextRequest) {
   const actionType = url.searchParams.get('actionType')?.trim();
   const adminId = url.searchParams.get('adminUserId')?.trim();
   const targetType = url.searchParams.get('targetType')?.trim();
+
+  const respond = (response: Response, metadata?: Record<string, unknown>) =>
+    respondWithTelemetry(response, {
+      adminUserId: authResult.userId,
+      metadata,
+    });
 
   const admin = getAdminClient();
 
@@ -48,7 +55,9 @@ export async function GET(req: NextRequest) {
   if (start) {
     const parsed = new Date(start);
     if (Number.isNaN(parsed.getTime())) {
-      return NextResponse.json({ error: 'Invalid start date' }, { status: 400 });
+      return respond(NextResponse.json({ error: 'Invalid start date' }, { status: 400 }), {
+        stage: 'validation',
+      });
     }
     query = query.gte('created_at', parsed.toISOString());
   }
@@ -56,7 +65,9 @@ export async function GET(req: NextRequest) {
   if (end) {
     const parsed = new Date(end);
     if (Number.isNaN(parsed.getTime())) {
-      return NextResponse.json({ error: 'Invalid end date' }, { status: 400 });
+      return respond(NextResponse.json({ error: 'Invalid end date' }, { status: 400 }), {
+        stage: 'validation',
+      });
     }
     parsed.setUTCHours(23, 59, 59, 999);
     query = query.lte('created_at', parsed.toISOString());
@@ -77,7 +88,9 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respond(NextResponse.json({ error: error.message }, { status: 500 }), {
+      stage: 'fetch_audit',
+    });
   }
 
   const csvRows = [
@@ -99,11 +112,21 @@ export async function GET(req: NextRequest) {
 
   const csvContent = csvRows.join('\n');
 
-  return new NextResponse(csvContent, {
-    status: 200,
-    headers: {
-      'Content-Type': 'text/csv; charset=utf-8',
-      'Content-Disposition': `attachment; filename="admin-audit-log-${Date.now()}.csv"`,
-    },
-  });
-}
+  return respond(
+    new NextResponse(csvContent, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="admin-audit-log-${Date.now()}.csv"`,
+      },
+    }),
+    {
+      start,
+      end,
+      actionType,
+      adminId,
+      targetType,
+      rowCount: data?.length ?? 0,
+    }
+  );
+});

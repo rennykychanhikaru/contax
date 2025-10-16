@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
 type BreakGlassRow = {
   id: string;
@@ -66,10 +67,10 @@ async function enrichOverrides(
   }));
 }
 
-export async function GET(
+export const GET = withAdminTelemetry('GET /api/admin/accounts/[accountId]/break-glass', async (
   _req: NextRequest,
   context: { params: Promise<{ accountId: string }> }
-) {
+) => {
   const authResult = await requireSuperAdmin(_req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -84,18 +85,27 @@ export async function GET(
     .order('created_at', { ascending: false });
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+    });
   }
 
   const overrides = await enrichOverrides(data ?? [], admin);
 
-  return NextResponse.json({ overrides });
-}
+  return respondWithTelemetry(NextResponse.json({ overrides }), {
+    adminUserId: authResult.userId,
+    targetType: 'account',
+    targetId: accountId,
+    metadata: { total: overrides.length },
+  });
+});
 
-export async function POST(
+export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/break-glass', async (
   req: NextRequest,
   context: { params: Promise<{ accountId: string }> }
-) {
+) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
@@ -117,11 +127,19 @@ export async function POST(
       : '';
 
   if (!userEmail || !userEmail.includes('@')) {
-    return NextResponse.json({ error: 'Valid user email is required' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Valid user email is required' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+    });
   }
 
   if (!reason) {
-    return NextResponse.json({ error: 'Reason is required' }, { status: 400 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Reason is required' }, { status: 400 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+    });
   }
 
   const admin = getAdminClient();
@@ -133,11 +151,20 @@ export async function POST(
     .maybeSingle();
 
   if (accountError) {
-    return NextResponse.json({ error: accountError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: accountError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { stage: 'fetch_account' },
+    });
   }
 
   if (!account) {
-    return NextResponse.json({ error: 'Account not found' }, { status: 404 });
+    return respondWithTelemetry(NextResponse.json({ error: 'Account not found' }, { status: 404 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+    });
   }
 
   const { data: members, error: memberFetchError } = await admin
@@ -146,7 +173,12 @@ export async function POST(
     .eq('account_id', accountId);
 
   if (memberFetchError) {
-    return NextResponse.json({ error: memberFetchError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: memberFetchError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { stage: 'fetch_members' },
+    });
   }
 
   const match = (members ?? []).find(
@@ -154,9 +186,13 @@ export async function POST(
   );
 
   if (!match) {
-    return NextResponse.json(
-      { error: 'User not found on this account' },
-      { status: 404 }
+    return respondWithTelemetry(
+      NextResponse.json({ error: 'User not found on this account' }, { status: 404 }),
+      {
+        adminUserId: authResult.userId,
+        targetType: 'account',
+        targetId: accountId,
+      }
     );
   }
 
@@ -166,7 +202,12 @@ export async function POST(
     await admin.auth.admin.getUserById(userId);
 
   if (getUserError || !targetUserData?.user) {
-    return NextResponse.json({ error: getUserError?.message || 'User not found' }, { status: 404 });
+    return respondWithTelemetry(NextResponse.json({ error: getUserError?.message || 'User not found' }, { status: 404 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { stage: 'fetch_target_user' },
+    });
   }
   const targetUser = targetUserData.user;
 
@@ -176,9 +217,13 @@ export async function POST(
     crypto.randomBytes(9).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
 
   if (temporaryPassword.length < 8) {
-    return NextResponse.json(
-      { error: 'Temporary password must be at least 8 characters if provided' },
-      { status: 400 }
+    return respondWithTelemetry(
+      NextResponse.json({ error: 'Temporary password must be at least 8 characters if provided' }, { status: 400 }),
+      {
+        adminUserId: authResult.userId,
+        targetType: 'account',
+        targetId: accountId,
+      }
     );
   }
 
@@ -191,7 +236,12 @@ export async function POST(
   });
 
   if (passwordUpdateError) {
-    return NextResponse.json({ error: passwordUpdateError.message }, { status: 500 });
+    return respondWithTelemetry(NextResponse.json({ error: passwordUpdateError.message }, { status: 500 }), {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { stage: 'update_user_password' },
+    });
   }
 
   await admin
@@ -217,9 +267,14 @@ export async function POST(
     .single();
 
   if (insertError || !inserted) {
-    return NextResponse.json(
-      { error: insertError?.message || 'Failed to create override' },
-      { status: 500 }
+    return respondWithTelemetry(
+      NextResponse.json({ error: insertError?.message || 'Failed to create override' }, { status: 500 }),
+      {
+        adminUserId: authResult.userId,
+        targetType: 'account',
+        targetId: accountId,
+        metadata: { stage: 'insert_override' },
+      }
     );
   }
 
@@ -238,8 +293,16 @@ export async function POST(
 
   const [override] = await enrichOverrides([inserted], admin);
 
-  return NextResponse.json({
-    override,
-    temporaryPassword,
-  });
-}
+  return respondWithTelemetry(
+    NextResponse.json({
+      override,
+      temporaryPassword,
+    }),
+    {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      targetId: accountId,
+      metadata: { userEmail, durationMinutes },
+    }
+  );
+});

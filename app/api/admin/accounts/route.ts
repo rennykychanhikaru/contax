@@ -3,17 +3,21 @@ import crypto from 'node:crypto';
 import { requireSuperAdmin } from '@/middleware/super-admin';
 import { getAdminClient } from '@/lib/db/admin';
 import type { Database } from '@/supabase/database.types';
+import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telemetry';
 
-export async function GET(req: NextRequest) {
+export const GET = withAdminTelemetry('GET /api/admin/accounts', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const respond = (response: Response, metadata?: Record<string, unknown>) =>
+    respondWithTelemetry(response, {
+      adminUserId: authResult.userId,
+      metadata,
+    });
+
   const url = new URL(req.url);
   const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10));
-  const limit = Math.min(
-    100,
-    Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10))
-  );
+  const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10)));
   const search = url.searchParams.get('search')?.trim();
   const statusParam = url.searchParams.get('status')?.toLowerCase();
   const legacyStatus = url.searchParams.get('isDisabled');
@@ -23,7 +27,6 @@ export async function GET(req: NextRequest) {
   const hasBreakGlassParam = url.searchParams.get('hasBreakGlass');
 
   const admin = getAdminClient();
-
   const fetchEnd = Math.min(page * limit + limit * 3, 500) - 1;
 
   let query = admin
@@ -72,7 +75,7 @@ export async function GET(req: NextRequest) {
   if (createdAfterParam) {
     const parsed = new Date(createdAfterParam);
     if (Number.isNaN(parsed.getTime())) {
-      return NextResponse.json({ error: 'Invalid createdAfter date' }, { status: 400 });
+      return respond(NextResponse.json({ error: 'Invalid createdAfter date' }, { status: 400 }));
     }
     query = query.gte('created_at', parsed.toISOString());
   }
@@ -80,7 +83,7 @@ export async function GET(req: NextRequest) {
   if (createdBeforeParam) {
     const parsed = new Date(createdBeforeParam);
     if (Number.isNaN(parsed.getTime())) {
-      return NextResponse.json({ error: 'Invalid createdBefore date' }, { status: 400 });
+      return respond(NextResponse.json({ error: 'Invalid createdBefore date' }, { status: 400 }));
     }
     parsed.setUTCHours(23, 59, 59, 999);
     query = query.lte('created_at', parsed.toISOString());
@@ -89,7 +92,9 @@ export async function GET(req: NextRequest) {
   const { data, error } = await query;
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return respond(NextResponse.json({ error: error.message }, { status: 500 }), {
+      stage: 'fetch_accounts',
+    });
   }
 
   type AccountRow = Database['public']['Tables']['accounts']['Row'] & {
@@ -123,34 +128,55 @@ export async function GET(req: NextRequest) {
   const offset = (page - 1) * limit;
   const paginatedAccounts = filteredAccounts.slice(offset, offset + limit);
 
-  return NextResponse.json({
-    accounts: paginatedAccounts,
-    pagination: {
-      page,
-      limit,
-      total: filteredAccounts.length,
-      totalPages: Math.ceil(filteredAccounts.length / limit),
-    },
-  });
-}
+  return respond(
+    NextResponse.json({
+      accounts: paginatedAccounts,
+      pagination: {
+        page,
+        limit,
+        total: filteredAccounts.length,
+        totalPages: Math.ceil(filteredAccounts.length / limit),
+      },
+    }),
+    {
+      pagination: { page, limit, total: filteredAccounts.length },
+      filters: {
+        statusParam,
+        superAdminParam,
+        hasBreakGlassParam,
+        createdAfterParam,
+        createdBeforeParam,
+        search,
+      },
+    }
+  );
+});
 
-export async function POST(req: NextRequest) {
+export const POST = withAdminTelemetry('POST /api/admin/accounts', async (req: NextRequest) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
+
+  const respond = (response: Response, metadata?: Record<string, unknown>) =>
+    respondWithTelemetry(response, {
+      adminUserId: authResult.userId,
+      targetType: 'account',
+      metadata,
+    });
 
   const payload = await req.json().catch(() => null);
 
   const name = typeof payload?.name === 'string' ? payload.name.trim() : '';
-  const ownerEmail = typeof payload?.ownerEmail === 'string' ? payload.ownerEmail.trim().toLowerCase() : '';
+  const ownerEmail =
+    typeof payload?.ownerEmail === 'string' ? payload.ownerEmail.trim().toLowerCase() : '';
   const providedPassword =
     typeof payload?.temporaryPassword === 'string' ? payload.temporaryPassword.trim() : '';
 
   if (!name) {
-    return NextResponse.json({ error: 'Account name is required' }, { status: 400 });
+    return respond(NextResponse.json({ error: 'Account name is required' }, { status: 400 }));
   }
 
   if (!ownerEmail || !ownerEmail.includes('@')) {
-    return NextResponse.json({ error: 'Valid owner email is required' }, { status: 400 });
+    return respond(NextResponse.json({ error: 'Valid owner email is required' }, { status: 400 }));
   }
 
   const admin = getAdminClient();
@@ -159,14 +185,16 @@ export async function POST(req: NextRequest) {
     providedPassword ||
     crypto.randomBytes(9).toString('base64url').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
 
-  // Create or update the owner user
   let ownerUserId: string | null = null;
   let userExisting = false;
 
   const existingUsers = await admin.auth.admin.listUsers({ email: ownerEmail, perPage: 1 });
 
   if (existingUsers.error) {
-    return NextResponse.json({ error: existingUsers.error.message }, { status: 500 });
+    return respond(NextResponse.json({ error: existingUsers.error.message }, { status: 500 }), {
+      ownerEmail,
+      step: 'list_users',
+    });
   }
 
   if (existingUsers.users.length > 0) {
@@ -182,7 +210,10 @@ export async function POST(req: NextRequest) {
     });
 
     if (updateRes.error) {
-      return NextResponse.json({ error: updateRes.error.message }, { status: 500 });
+      return respond(NextResponse.json({ error: updateRes.error.message }, { status: 500 }), {
+        ownerEmail,
+        step: 'update_user',
+      });
     }
   } else {
     const createRes = await admin.auth.admin.createUser({
@@ -195,9 +226,15 @@ export async function POST(req: NextRequest) {
     });
 
     if (createRes.error || !createRes.user) {
-      return NextResponse.json(
-        { error: createRes.error?.message || 'Failed to create user' },
-        { status: 500 }
+      return respond(
+        NextResponse.json(
+          { error: createRes.error?.message || 'Failed to create user' },
+          { status: 500 }
+        ),
+        {
+          ownerEmail,
+          step: 'create_user',
+        }
       );
     }
 
@@ -205,10 +242,12 @@ export async function POST(req: NextRequest) {
   }
 
   if (!ownerUserId) {
-    return NextResponse.json({ error: 'Unable to determine owner user ID' }, { status: 500 });
+    return respond(NextResponse.json({ error: 'Unable to determine owner user ID' }, { status: 500 }), {
+      ownerEmail,
+      step: 'determine_owner_id',
+    });
   }
 
-  // Ensure the user is not already tied to another organization
   const { data: existingMembership, error: membershipError } = await admin
     .from('organization_members')
     .select('organization_id')
@@ -216,13 +255,24 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
 
   if (membershipError) {
-    return NextResponse.json({ error: membershipError.message }, { status: 500 });
+    return respond(NextResponse.json({ error: membershipError.message }, { status: 500 }), {
+      ownerEmail,
+      ownerUserId,
+      step: 'check_membership',
+    });
   }
 
   if (existingMembership) {
-    return NextResponse.json(
-      { error: 'User already belongs to an organization. Invite them instead.' },
-      { status: 400 }
+    return respond(
+      NextResponse.json(
+        { error: 'User already belongs to an organization. Invite them instead.' },
+        { status: 400 }
+      ),
+      {
+        ownerEmail,
+        ownerUserId,
+        step: 'membership_conflict',
+      }
     );
   }
 
@@ -254,9 +304,13 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (orgError || !org) {
-    return NextResponse.json(
-      { error: orgError?.message || 'Failed to create organization' },
-      { status: 500 }
+    return respond(
+      NextResponse.json({ error: orgError?.message || 'Failed to create organization' }, { status: 500 }),
+      {
+        ownerEmail,
+        ownerUserId,
+        step: 'create_org',
+      }
     );
   }
 
@@ -267,7 +321,12 @@ export async function POST(req: NextRequest) {
   });
 
   if (memberError) {
-    return NextResponse.json({ error: memberError.message }, { status: 500 });
+    return respond(NextResponse.json({ error: memberError.message }, { status: 500 }), {
+      ownerEmail,
+      ownerUserId,
+      organizationId: org.id,
+      step: 'insert_member',
+    });
   }
 
   await admin
@@ -292,13 +351,21 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({
-    account: org,
-    owner: {
-      id: ownerUserId,
-      email: ownerEmail,
-      existingUser: userExisting,
-    },
-    temporaryPassword: password,
-  });
-}
+  return respond(
+    NextResponse.json({
+      account: org,
+      owner: {
+        id: ownerUserId,
+        email: ownerEmail,
+        existingUser: userExisting,
+      },
+      temporaryPassword: password,
+    }),
+    {
+      ownerEmail,
+      ownerUserId,
+      organizationId: org.id,
+      ownerExisting: userExisting,
+    }
+  );
+});

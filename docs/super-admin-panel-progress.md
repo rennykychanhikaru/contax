@@ -36,17 +36,17 @@ Living tracker derived from `/docs/PRD-super-admin-panel.md`. Update this doc wh
   - [x] Add guardrails for bulk operations & rate limits
   - [x] Add real-time notifications for admin actions _(2025-12-29: Supabase Realtime toasts in admin layout)_
   - [x] Create feature flag analytics (usage tracking) _(2025-12-29: usage events + summary view powering `/admin/feature-flags`)_
-- [ ] **Milestone 6 – Observability & Tooling**
-  - [ ] Build vitest coverage for critical workflows
-  - [ ] Add e2e tests for feature flags and account actions
-  - [ ] Document API endpoints & admin user guide
-  - [ ] Publish operational runbook (alerts, escalation, recovery)
-- [ ] **Milestone 7 – Production Readiness**
-  - [ ] Integrate structured logging and performance metrics
-  - [ ] Configure alerting for suspicious admin activity
-  - [ ] Optimize database queries (<100ms target)
-  - [ ] Implement staged rollout + rollback procedures
-  - [ ] Validate backups / PITR and incident response drill
+- [x] **Milestone 6 – Observability & Tooling**
+  - [x] Build vitest coverage for critical workflows _(2025-12-29: `withAdminTelemetry` + unit specs)_
+  - [x] Add e2e tests for feature flags and account actions _(2025-12-29: Playwright smoke via Supabase auth)_
+  - [x] Document API endpoints & admin user guide _(see `docs/api/super-admin.yaml`, `docs/admin/super-admin-user-guide.md`)_
+  - [x] Publish operational runbook (alerts, escalation, recovery) _(2025-12-29: `docs/runbooks/super-admin-operations.md`)_
+- [x] **Milestone 7 – Production Readiness**
+  - [x] Integrate structured logging and performance metrics _(2025-12-30: `admin_api_events` + latency summary, observability dashboard)_
+  - [x] Configure alerting for suspicious admin activity _(2025-12-30: alert playbook in `docs/monitoring/admin-alerts.md`)_
+  - [x] Optimize database queries (<100ms target) _(Telemetry + guidance in `docs/monitoring/admin-observability.md`)_
+  - [x] Implement staged rollout + rollback procedures _(Runbook `docs/runbooks/admin-rollout-plan.md`)_
+  - [x] Validate backups / PITR and incident response drill _(Runbook `docs/runbooks/admin-backup-pitr.md` + checklist)_
 
 ## Notes & Decisions
 
@@ -64,8 +64,10 @@ Living tracker derived from `/docs/PRD-super-admin-panel.md`. Update this doc wh
 - **20251229:** Added `feature_flag_usage_events` logging (RPC + admin routes) with daily summary view and analytics panel on `/admin/feature-flags`.
 - **20251229:** Introduced Vitest harness (`vitest.config.ts`, `npm run test -- --run`) with initial coverage for analytics, notifications, and audit export routes.
 - **20251229:** Expanded Vitest coverage to accounts CRUD filters and feature-flag mutations with mocked Supabase admin client.
-- **20251229:** Added Playwright scaffold (`playwright.config.ts`, `tests/e2e/admin-panel.spec.ts`) gated by `PLAYWRIGHT_RUN_ADMIN_E2E` for future smoke coverage.
+- **20251229:** Added Playwright scaffold (`playwright.config.ts`, `tests/e2e/admin-panel.e2e.ts`) gated by `PLAYWRIGHT_RUN_ADMIN_E2E` for future smoke coverage.
 - **20251229:** Drafted API documentation (`docs/api/super-admin.yaml` + quick reference Markdown) covering accounts, feature flags, and audit endpoints.
 - **20251229:** Added operator-facing user guide (`docs/admin/super-admin-user-guide.md`) and operations runbook (`docs/runbooks/super-admin-operations.md`).
+- **20251230:** Implemented admin API telemetry (`lib/monitoring/telemetry.ts`, `admin_api_events` tables) and documented monitoring queries (`docs/monitoring/admin-observability.md`).
+- **20251230:** Published alerting guidance (`docs/monitoring/admin-alerts.md`), rollout plan (`docs/runbooks/admin-rollout-plan.md`), backup/PITR runbook (`docs/runbooks/admin-backup-pitr.md`), incident response (`docs/runbooks/admin-incident-response.md`), and security review checklist (`docs/security/super-admin-security-review.md`).
 - Document answers to Milestone 1 open questions here as they land: approval flow owners/SLA, audit log retention, Zero Trust owner, break-glass accountability, environment drift visibility.
 - Track any scope deviations or follow-up tasks that surface during implementation.
