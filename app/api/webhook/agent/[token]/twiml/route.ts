@@ -61,6 +61,7 @@ export async function POST(
     stream.parameter({ name: 'organizationId', value: agent.organization_id || '' });
     stream.parameter({ name: 'agentId', value: agent.id });
     stream.parameter({ name: 'direction', value: 'outbound' });
+    stream.parameter({ name: 'sessionId', value: crypto.randomUUID() });
     stream.parameter({ name: 'auth', value: authToken });
     // Allow voice to be overridden in the future; default to 'sage' for now
     stream.parameter({ name: 'voice', value: (agent as { voice?: string }).voice || 'sage' });

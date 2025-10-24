@@ -14,18 +14,24 @@ const DEFAULT_GREETING = `Hi! Thanks for calling. I'm your AI assistant. How can
 
 const DEFAULT_NAME = 'AI Assistant';
 const DEFAULT_VOICE = 'sage';
+const DEFAULT_PROVIDER = 'openai';
 
 export function useAgentSettings(agentId: string | null) {
   const [displayName, setDisplayName] = useState('');
   const [prompt, setPrompt] = useState('');
   const [greeting, setGreeting] = useState('');
   const [voice, setVoice] = useState(DEFAULT_VOICE);
+  const [voiceProvider, setVoiceProvider] = useState<'openai' | 'elevenlabs'>(DEFAULT_PROVIDER);
+  const [elevenlabsVoiceId, setElevenlabsVoiceId] = useState<string | null>(null);
+  const [elevenlabsVoiceSettings, setElevenlabsVoiceSettings] = useState<Record<string, unknown> | null>(null);
+  const [voiceFallbackEnabled, setVoiceFallbackEnabled] = useState(true);
   const [webhookEnabled, setWebhookEnabled] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [twilioConfigured, setTwilioConfigured] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
 
   const [twilioAccountSid, setTwilioAccountSid] = useState('');
   const [twilioAuthToken, setTwilioAuthToken] = useState('');
@@ -47,8 +53,17 @@ export function useAgentSettings(agentId: string | null) {
           setPrompt(agentData.agent.prompt || DEFAULT_PROMPT);
           setGreeting(agentData.agent.greeting || DEFAULT_GREETING);
           setVoice(agentData.agent.voice || DEFAULT_VOICE);
+          setVoiceProvider((agentData.agent.voice_provider as 'openai' | 'elevenlabs') || DEFAULT_PROVIDER);
+          setElevenlabsVoiceId(agentData.agent.elevenlabs_voice_id || null);
+          setElevenlabsVoiceSettings(agentData.agent.elevenlabs_voice_settings || null);
+          setVoiceFallbackEnabled(
+            agentData.agent.voice_fallback_enabled === undefined
+              ? true
+              : Boolean(agentData.agent.voice_fallback_enabled),
+          );
           setWebhookEnabled(agentData.agent.webhook_enabled || false);
           setWebhookUrl(agentData.agent.webhook_url || '');
+          setOrganizationId(agentData.organization?.id || agentData.agent.organization_id || null);
         }
 
         const twilioData = await twilioRes.json();
@@ -79,18 +94,21 @@ export function useAgentSettings(agentId: string | null) {
     setMessage(null);
 
     try {
-      const response = await fetch(`/api/agents/${agentId}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            display_name: displayName,
-            prompt,
-            greeting,
-            voice,
-            webhook_enabled: webhookEnabled
-          }),
-        });
+      const response = await fetch(`/api/agents/${agentId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          display_name: displayName,
+          prompt,
+          greeting,
+          voice,
+          voice_provider: voiceProvider,
+          elevenlabs_voice_id: elevenlabsVoiceId,
+          elevenlabs_voice_settings: elevenlabsVoiceSettings,
+          voice_fallback_enabled: voiceFallbackEnabled,
+          webhook_enabled: webhookEnabled,
+        }),
+      });
 
       if (response.ok) {
         // Reflect server-calculated values immediately (e.g., webhook_url after token generation)
@@ -156,15 +174,24 @@ export function useAgentSettings(agentId: string | null) {
     setPrompt(DEFAULT_PROMPT);
     setGreeting(DEFAULT_GREETING);
     setVoice(DEFAULT_VOICE);
+    setVoiceProvider(DEFAULT_PROVIDER);
+    setElevenlabsVoiceId(null);
+    setElevenlabsVoiceSettings(null);
+    setVoiceFallbackEnabled(true);
     setMessage(null);
   };
 
   return {
     agentId,
+    organizationId,
     displayName, setDisplayName,
     prompt, setPrompt,
     greeting, setGreeting,
     voice, setVoice,
+    voiceProvider, setVoiceProvider,
+    elevenlabsVoiceId, setElevenlabsVoiceId,
+    elevenlabsVoiceSettings, setElevenlabsVoiceSettings,
+    voiceFallbackEnabled, setVoiceFallbackEnabled,
     webhookEnabled, setWebhookEnabled,
     webhookUrl,
     twilioConfigured,

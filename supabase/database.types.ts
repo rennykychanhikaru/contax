@@ -352,8 +352,12 @@ export type Database = {
           organization_id: string
           prompt: string
           temperature: number | null
-          updated_at: string | null
           voice: string | null
+          voice_fallback_enabled: boolean | null
+          voice_provider: string | null
+          elevenlabs_voice_id: string | null
+          elevenlabs_voice_settings: Json | null
+          updated_at: string | null
           webhook_enabled: boolean | null
           webhook_token: string | null
           webhook_url: string | null
@@ -381,8 +385,12 @@ export type Database = {
           organization_id: string
           prompt: string
           temperature?: number | null
-          updated_at?: string | null
           voice?: string | null
+          voice_fallback_enabled?: boolean | null
+          voice_provider?: string | null
+          elevenlabs_voice_id?: string | null
+          elevenlabs_voice_settings?: Json | null
+          updated_at?: string | null
           webhook_enabled?: boolean | null
           webhook_token?: string | null
           webhook_url?: string | null
@@ -410,8 +418,12 @@ export type Database = {
           organization_id?: string
           prompt?: string
           temperature?: number | null
-          updated_at?: string | null
           voice?: string | null
+          voice_fallback_enabled?: boolean | null
+          voice_provider?: string | null
+          elevenlabs_voice_id?: string | null
+          elevenlabs_voice_settings?: Json | null
+          updated_at?: string | null
           webhook_enabled?: boolean | null
           webhook_token?: string | null
           webhook_url?: string | null
@@ -718,6 +730,7 @@ export type Database = {
           feature_flag_id: string
           id: string
           is_enabled: boolean
+          metadata: Json | null
           updated_at: string
           user_id: string | null
         }
@@ -727,6 +740,7 @@ export type Database = {
           feature_flag_id: string
           id?: string
           is_enabled: boolean
+          metadata?: Json | null
           updated_at?: string
           user_id?: string | null
         }
@@ -736,6 +750,7 @@ export type Database = {
           feature_flag_id?: string
           id?: string
           is_enabled?: boolean
+          metadata?: Json | null
           updated_at?: string
           user_id?: string | null
         }
@@ -752,6 +767,165 @@ export type Database = {
             columns: ["feature_flag_id"]
             isOneToOne: false
             referencedRelation: "feature_flags"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organization_feature_flags: {
+        Row: {
+          created_at: string
+          enabled: boolean
+          feature_flag_id: string
+          id: string
+          metadata: Json | null
+          organization_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          enabled?: boolean
+          feature_flag_id: string
+          id?: string
+          metadata?: Json | null
+          organization_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          enabled?: boolean
+          feature_flag_id?: string
+          id?: string
+          metadata?: Json | null
+          organization_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "organization_feature_flags_feature_flag_id_fkey"
+            columns: ["feature_flag_id"]
+            isOneToOne: false
+            referencedRelation: "feature_flags"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "organization_feature_flags_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      subscription_addons: {
+        Row: {
+          activated_at: string | null
+          addon_type: string
+          billing_status: string | null
+          cancelled_at: string | null
+          created_at: string
+          id: string
+          metadata: Json | null
+          organization_id: string
+          status: string
+          trial_ends_at: string | null
+          updated_at: string
+        }
+        Insert: {
+          activated_at?: string | null
+          addon_type: string
+          billing_status?: string | null
+          cancelled_at?: string | null
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          organization_id: string
+          status?: string
+          trial_ends_at?: string | null
+          updated_at?: string
+        }
+        Update: {
+          activated_at?: string | null
+          addon_type?: string
+          billing_status?: string | null
+          cancelled_at?: string | null
+          created_at?: string
+          id?: string
+          metadata?: Json | null
+          organization_id?: string
+          status?: string
+          trial_ends_at?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "subscription_addons_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      voice_usage_logs: {
+        Row: {
+          agent_id: string | null
+          call_id: string | null
+          character_count: number | null
+          cost_cents: number | null
+          created_at: string
+          duration_seconds: number | null
+          id: string
+          organization_id: string
+          session_id: string | null
+          voice_id: string | null
+          voice_provider: string
+        }
+        Insert: {
+          agent_id?: string | null
+          call_id?: string | null
+          character_count?: number | null
+          cost_cents?: number | null
+          created_at?: string
+          duration_seconds?: number | null
+          id?: string
+          organization_id: string
+          session_id?: string | null
+          voice_id?: string | null
+          voice_provider: string
+        }
+        Update: {
+          agent_id?: string | null
+          call_id?: string | null
+          character_count?: number | null
+          cost_cents?: number | null
+          created_at?: string
+          duration_seconds?: number | null
+          id?: string
+          organization_id?: string
+          session_id?: string | null
+          voice_id?: string | null
+          voice_provider?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "voice_usage_logs_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agent_configurations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "voice_usage_logs_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: false
+            referencedRelation: "calls"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "voice_usage_logs_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
             referencedColumns: ["id"]
           },
         ]

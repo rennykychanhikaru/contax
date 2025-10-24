@@ -1,156 +1,355 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
-import { createServerClient } from '@supabase/ssr'
+import { randomUUID } from 'crypto';
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getAdminClient } from '@/lib/db/admin';
+import { FeatureFlagService } from '@/lib/feature-flags/service';
+import { logVoiceUsage } from '@/lib/billing/voice-usage';
+import type { Database } from '@/supabase/database.types';
+import { resolveSupabaseUser } from '@/lib/supabase/session';
 
-export async function POST(req: NextRequest) {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) {
-    return NextResponse.json({ error: 'OpenAI API key not configured' }, { status: 500 })
-  }
+type AgentRow = Database['public']['Tables']['agent_configurations']['Row'];
+type AgentVoiceConfig = Pick<
+  AgentRow,
+  | 'id'
+  | 'organization_id'
+  | 'voice'
+  | 'voice_provider'
+  | 'voice_fallback_enabled'
+  | 'elevenlabs_voice_id'
+  | 'elevenlabs_voice_settings'
+>;
 
-  // Parse the request body to get agentId if provided
-  let agentId: string | undefined
-  let requestBody: Record<string, unknown> = {}
-  let systemPrompt: string | undefined
-  let language: string | undefined
+const REALTIME_MODEL = 'gpt-4o-realtime-preview-2024-12-17';
 
+type TokenRequestBody = {
+  agentId?: string;
+  organizationId?: string;
+  systemPrompt?: string;
+  language?: string;
+};
+
+type VoiceMetadata =
+  | {
+      provider: 'openai';
+      voice: string;
+    }
+  | {
+      provider: 'elevenlabs';
+      voiceId: string;
+      voiceSettings?: unknown;
+      modelId: string;
+      sessionId: string;
+    };
+
+async function parseRequest(
+  req: NextRequest,
+): Promise<TokenRequestBody & Record<string, unknown>> {
   try {
-    requestBody = await req.json()
-    agentId = requestBody.agentId as string | undefined
-    systemPrompt = (requestBody.systemPrompt as string | undefined)?.toString()
-    language = (requestBody.language as string | undefined)?.toString()
+    const body = await req.json();
+    if (body && typeof body === 'object') {
+      return body as TokenRequestBody & Record<string, unknown>;
+    }
   } catch {
-    // If body parsing fails, continue without agentId
+    // Ignore malformed JSON
+  }
+  return {};
+}
+
+function buildInstructions(prompt?: string, language?: string) {
+  const basePrompt =
+    prompt && prompt.trim().length
+      ? prompt.trim()
+      : 'You are a helpful scheduling assistant.';
+
+  if (language && language.trim().length) {
+    return `${basePrompt}\n\nAlways and only speak in ${language.trim()}. Keep responses concise and conversational.`;
   }
 
-  // Default voice if not found in agent configuration
-  let voice = 'sage'
+  return basePrompt;
+}
 
-  // If agentId is provided, fetch the agent's voice configuration
-  if (agentId) {
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll()
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options)
-              })
-            } catch (error) {
-              // Handle error
-            }
-          },
-        },
-      }
-    )
-
-    try {
-      const { data: agent } = await supabase
-        .from('agent_configurations')
-        .select('voice')
-        .eq('id', agentId)
-        .single()
-
-      if (agent?.voice) {
-        voice = agent.voice
-      }
-    } catch (error) {
-      // If we can't fetch the agent, use default voice
-      console.error('Failed to fetch agent voice configuration:', error)
-    }
-  } else {
-    // Try to get the default agent for the user's organization
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return cookieStore.getAll()
-          },
-          setAll(cookiesToSet) {
-            try {
-              cookiesToSet.forEach(({ name, value, options }) => {
-                cookieStore.set(name, value, options)
-              })
-            } catch (error) {
-              // Handle error
-            }
-          },
-        },
-      }
-    )
-
-    const { data: { user } } = await supabase.auth.getUser()
-
-    if (user) {
-      try {
-        // Get user's organization
-        const { data: member } = await supabase
-          .from('organization_members')
-          .select('organization_id')
-          .eq('user_id', user.id)
-          .single()
-
-        if (member) {
-          // Get the default agent's voice
-          const { data: agent } = await supabase
-            .from('agent_configurations')
-            .select('voice')
-            .eq('organization_id', member.organization_id)
-            .eq('name', 'default')
-            .single()
-
-          if (agent?.voice) {
-            voice = agent.voice
-          }
-        }
-      } catch (error) {
-        // If we can't fetch the agent, use default voice
-        console.error('Failed to fetch default agent voice configuration:', error)
-      }
-    }
-  }
-
-  // Build session instructions from provided system prompt and language.
-  // We intentionally do NOT include the greeting here, as the client sends a one-off exact greeting
-  // instruction after the session is established to avoid double-greeting.
-  const basePrompt = (systemPrompt && systemPrompt.trim()) ? systemPrompt.trim() : 'You are a helpful scheduling assistant.'
-  const lang = (language && language.trim()) ? language.trim() : undefined
-  const sessionInstructions = lang
-    ? `${basePrompt}\n\nAlways and only speak in ${lang}. Keep responses concise and conversational.`
-    : basePrompt
-
+async function createOpenAISession(params: {
+  apiKey: string;
+  voice: string;
+  instructions: string;
+}) {
   const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${apiKey}`,
+      Authorization: `Bearer ${params.apiKey}`,
       'Content-Type': 'application/json',
-      // Required beta header for Realtime Sessions API
       'OpenAI-Beta': 'realtime=v1',
     },
     body: JSON.stringify({
-      model: 'gpt-4o-realtime-preview-2024-12-17',
+      model: REALTIME_MODEL,
       modalities: ['text', 'audio'],
-      voice: voice,
-      instructions: sessionInstructions
+      voice: params.voice,
+      instructions: params.instructions,
     }),
-  })
+  });
 
-  const data = await response.json()
+  const data = await response.json();
 
   if (!response.ok) {
-    // Surface OpenAI error details to help diagnose env/model issues
-    const detail = typeof data === 'object' ? (data.error || data) : data
-    return NextResponse.json({ error: 'Failed to create session', detail }, { status: response.status || 500 })
+    const detail =
+      typeof data === 'object' && data
+        ? data.error ?? data
+        : 'Unknown error creating OpenAI session';
+    throw new Error(
+      typeof detail === 'string'
+        ? detail
+        : JSON.stringify(detail, null, 2),
+    );
   }
 
-  return NextResponse.json(data)
+  return data as Record<string, unknown>;
+}
+
+async function loadAgent(agentId: string): Promise<AgentVoiceConfig | null> {
+  try {
+    const admin = getAdminClient();
+    const { data, error } = await admin
+      .from('agent_configurations')
+      .select(
+        [
+          'id',
+          'organization_id',
+          'voice',
+          'voice_provider',
+          'voice_fallback_enabled',
+          'elevenlabs_voice_id',
+          'elevenlabs_voice_settings',
+        ].join(', '),
+      )
+      .eq('id', agentId)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('Failed to load agent configuration', error.message);
+      return null;
+    }
+
+    return (data as AgentVoiceConfig) ?? null;
+  } catch (error) {
+    console.warn('Failed to load agent configuration', error);
+    return null;
+  }
+}
+
+async function resolveDefaultAgent(
+  supabase: ReturnType<typeof createClient> extends Promise<infer T> ? T : never,
+): Promise<AgentVoiceConfig | null> {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) return null;
+
+  const { data: membership } = await supabase
+    .from('organization_members')
+    .select('organization_id')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!membership?.organization_id) return null;
+
+  const { data: agent } = await supabase
+    .from('agent_configurations')
+    .select(
+      [
+        'id',
+        'organization_id',
+        'voice',
+        'voice_provider',
+        'voice_fallback_enabled',
+        'elevenlabs_voice_id',
+        'elevenlabs_voice_settings',
+      ].join(', '),
+    )
+    .eq('organization_id', membership.organization_id)
+    .eq('is_default', true)
+    .limit(1)
+    .maybeSingle();
+
+  return (agent as AgentVoiceConfig) ?? null;
+}
+
+function buildElevenLabsMetadata(agent: AgentVoiceConfig): VoiceMetadata | null {
+  if (!agent.elevenlabs_voice_id) {
+    return null;
+  }
+
+  return {
+    provider: 'elevenlabs',
+    voiceId: agent.elevenlabs_voice_id,
+    voiceSettings: agent.elevenlabs_voice_settings ?? undefined,
+    modelId: 'eleven_turbo_v2_5',
+    sessionId: randomUUID(),
+  };
+}
+
+export async function POST(req: NextRequest) {
+  const supabase = await createClient();
+  const body = await parseRequest(req);
+
+  const user = await resolveSupabaseUser(req, supabase);
+
+  if (!user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const agentId = typeof body.agentId === 'string' ? body.agentId : undefined;
+  const explicitOrgId =
+    typeof body.organizationId === 'string' ? body.organizationId : undefined;
+  const systemPrompt =
+    typeof body.systemPrompt === 'string' ? body.systemPrompt : undefined;
+  const language =
+    typeof body.language === 'string' ? body.language : undefined;
+
+  let agent: AgentVoiceConfig | null = null;
+
+  if (agentId) {
+    console.log('[realtime.token] request', { agentId, explicitOrgId });
+    agent = await loadAgent(agentId);
+    if (!agent) {
+      console.warn('[realtime.token] agent not found or inaccessible', { agentId });
+      return NextResponse.json(
+        { error: 'Agent not found' },
+        { status: 404 },
+      );
+    }
+
+    if (agent.organization_id) {
+      const { data: membership } = await supabase
+        .from('organization_members')
+        .select('organization_id')
+        .eq('organization_id', agent.organization_id)
+        .eq('user_id', user.id)
+        .limit(1)
+        .maybeSingle();
+
+      if (!membership) {
+        return NextResponse.json(
+          { error: 'Organization access denied' },
+          { status: 403 },
+        );
+      }
+    }
+  } else {
+    agent = await resolveDefaultAgent(supabase);
+  }
+
+  const organizationId = explicitOrgId ?? agent?.organization_id;
+  const voice = agent?.voice ?? 'sage';
+  const instructions = buildInstructions(systemPrompt, language);
+
+  const openAIApiKey = process.env.OPENAI_API_KEY;
+  if (!openAIApiKey) {
+    return NextResponse.json(
+      { error: 'OpenAI API key not configured' },
+      { status: 500 },
+    );
+  }
+
+  let voiceMetadata: VoiceMetadata = {
+    provider: 'openai',
+    voice,
+  };
+
+  const wantsElevenLabs = agent?.voice_provider === 'elevenlabs';
+
+  if (wantsElevenLabs) {
+    if (!organizationId) {
+      return NextResponse.json(
+        { error: 'organizationId required for ElevenLabs voices' },
+        { status: 400 },
+      );
+    }
+
+    const flagEnabled = await FeatureFlagService.isEnabled(
+      organizationId,
+      'elevenlabs_voices',
+      supabase,
+    );
+
+    if (flagEnabled.enabled) {
+      const hasSubscription = await FeatureFlagService.hasActiveSubscription(
+        organizationId,
+        'elevenlabs_voices',
+        supabase,
+      );
+
+      if (hasSubscription) {
+        const metadata = buildElevenLabsMetadata(agent);
+        if (metadata) {
+          voiceMetadata = metadata;
+        } else if (!agent.voice_fallback_enabled) {
+          return NextResponse.json(
+            { error: 'Agent lacks ElevenLabs configuration' },
+            { status: 400 },
+          );
+        }
+      } else if (!agent.voice_fallback_enabled) {
+        return NextResponse.json(
+          {
+            error: 'Premium voices not available',
+            requiresUpgrade: true,
+            upgradeUrl: '/settings/billing?addon=elevenlabs_voices',
+          },
+          { status: 403 },
+        );
+      }
+    } else if (!agent.voice_fallback_enabled) {
+      return NextResponse.json(
+        {
+          error: 'Premium voices not available',
+          requiresUpgrade: false,
+        },
+        { status: 403 },
+      );
+    }
+  }
+
+  try {
+    const session = await createOpenAISession({
+      apiKey: openAIApiKey,
+      voice,
+      instructions,
+    });
+
+    const sessionId =
+      (typeof session?.id === 'string' && session.id.length > 0
+        ? session.id
+        : typeof session?.session_id === 'string'
+          ? session.session_id
+          : randomUUID());
+
+    if (organizationId) {
+      await logVoiceUsage({
+        organizationId,
+        agentId: agent?.id ?? null,
+        provider: (voiceMetadata?.provider ?? 'openai') as 'openai' | 'elevenlabs',
+        voiceId:
+          voiceMetadata?.provider === 'elevenlabs'
+            ? (voiceMetadata.voiceId ?? null)
+            : voice ?? null,
+        sessionId,
+      });
+    }
+
+    return NextResponse.json({
+      ...session,
+      voice_metadata: voiceMetadata,
+    });
+  } catch (error) {
+    console.error('Failed to create OpenAI realtime session', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to create Realtime session',
+        detail: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 },
+    );
+  }
 }

@@ -63,6 +63,7 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       exp: now + 5 * 60,
       nonce: crypto.randomBytes(8).toString('hex'),
     }
+    const sessionId = crypto.randomUUID()
     const toB64Url = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
     const payloadJson = JSON.stringify(tokenPayload)
     const payloadB64 = toB64Url(Buffer.from(payloadJson, 'utf8'))
@@ -77,6 +78,7 @@ export class TwilioTelephonyAdapter implements TelephonyAdapter {
       <Parameter name="direction" value="outbound" />
       <Parameter name="auth" value="${authToken}" />
       <Parameter name="voice" value="${voice}" />
+      <Parameter name="sessionId" value="${sessionId}" />
     </Stream>
   </Connect>
 </Response>`

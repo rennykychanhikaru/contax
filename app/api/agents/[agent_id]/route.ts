@@ -132,7 +132,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
 
   try {
     const body = await req.json();
-    const { display_name, prompt, greeting, voice, language, temperature, max_tokens, webhook_enabled } = body;
+    const {
+      display_name,
+      prompt,
+      greeting,
+      voice,
+      voice_provider,
+      elevenlabs_voice_id,
+      elevenlabs_voice_settings,
+      voice_fallback_enabled,
+      language,
+      temperature,
+      max_tokens,
+      webhook_enabled,
+    } = body;
 
     // Get user's organization
     const { data: member } = await supabase
@@ -159,6 +172,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
       prompt: string;
       greeting: string;
       voice: string;
+      voice_provider: string;
+      elevenlabs_voice_id: string | null;
+      elevenlabs_voice_settings: unknown;
+      voice_fallback_enabled: boolean;
       language: string;
       temperature: number;
       max_tokens: number;
@@ -174,6 +191,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
       prompt: prompt || 'You are a helpful scheduling assistant.',
       greeting: greeting || 'Hi! Thanks for calling. How can I help you today?',
       voice: voice || 'sage',
+      voice_provider: voice_provider || 'openai',
+      elevenlabs_voice_id: elevenlabs_voice_id || null,
+      elevenlabs_voice_settings: elevenlabs_voice_settings || null,
+      voice_fallback_enabled:
+        voice_fallback_enabled === undefined ? true : Boolean(voice_fallback_enabled),
       language: language || 'en-US',
       temperature: temperature || 0.7,
       max_tokens: max_tokens || 500,
@@ -224,6 +246,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
         prompt?: string;
         greeting?: string;
         voice?: string;
+        voice_provider?: string;
+        elevenlabs_voice_id?: string | null;
+        elevenlabs_voice_settings?: unknown;
+        voice_fallback_enabled?: boolean;
         language?: string;
         temperature?: number;
         max_tokens?: number;
@@ -240,6 +266,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
       if (prompt !== undefined) updateData.prompt = prompt;
       if (greeting !== undefined) updateData.greeting = greeting;
       if (voice !== undefined) updateData.voice = voice || 'sage';
+      if (voice_provider !== undefined) updateData.voice_provider = voice_provider || 'openai';
+      if (elevenlabs_voice_id !== undefined) {
+        updateData.elevenlabs_voice_id = elevenlabs_voice_id || null;
+      }
+      if (elevenlabs_voice_settings !== undefined) {
+        updateData.elevenlabs_voice_settings = elevenlabs_voice_settings || null;
+      }
+      if (voice_fallback_enabled !== undefined) {
+        updateData.voice_fallback_enabled = Boolean(voice_fallback_enabled);
+      }
       if (language !== undefined) updateData.language = language || 'en-US';
       if (temperature !== undefined) updateData.temperature = temperature || 0.7;
       if (max_tokens !== undefined) updateData.max_tokens = max_tokens || 500;

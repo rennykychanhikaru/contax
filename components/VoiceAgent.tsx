@@ -144,6 +144,7 @@ export function VoiceAgent({
     try {
       // Ensure agent uses the latest calendar selection before connecting
       agentRef.current?.setCalendarIds(useUnion ? selectedCalIds : [calendarId])
+      await navigator.mediaDevices.getUserMedia({ audio: true })
       await agentRef.current!.connect(systemPrompt, {
         organizationId: org?.id,
         agentId,

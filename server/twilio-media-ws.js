@@ -19,6 +19,7 @@ const fs = require('fs')
 const path = require('path')
 const WebSocket = require('ws')
 const crypto = require('crypto')
+const { ElevenLabsStream } = require('./voice/elevenlabs-stream')
 
 // --- Load env from .env.local then .env if not already set (Next.js dev style) ---
 function loadDotEnvIfPresent(file) {
@@ -62,6 +63,29 @@ function sendTwilioAudioB64(ws, streamSid, payloadB64) {
   ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: payloadB64 } }))
 }
 
+function emitMonitor(event, details = {}, level = 'info') {
+  try {
+    const entry = {
+      ts: new Date().toISOString(),
+      level,
+      component: 'twilio-media-ws',
+      event,
+      ...details,
+    }
+    console.log('[voice.monitor]', JSON.stringify(entry))
+  } catch (err) {
+    console.warn('[monitor.emit.error]', err?.message || err)
+  }
+}
+
+function emitMonitorError(event, error, details = {}) {
+  const payload = {
+    ...details,
+    error: error?.message || error,
+  }
+  emitMonitor(event, payload, 'error')
+}
+
 // --- Server setup ---
 const PORT = parseInt(process.env.TWILIO_WS_PORT || '8787', 10)
 const server = http.createServer()
@@ -91,6 +115,7 @@ server.on('request', (req, res) => {
 // Supabase admin client (lazy ESM import to avoid CJS require errors)
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const ELEVENLABS_PRICE_PER_1K_CHARS_CENTS = Number(process.env.ELEVENLABS_PRICE_CENTS_PER_1K || '0')
 let supabase = null
 async function getSupabase() {
   if (supabase) return supabase
@@ -104,6 +129,80 @@ async function getSupabase() {
     console.error('[fatal] Failed to load @supabase/supabase-js:', e?.message)
   }
   return supabase
+}
+
+const sessionStats = new Map()
+
+async function upsertVoiceUsage(stat) {
+  if (!stat || !stat.organizationId) return
+  const client = await getSupabase()
+  if (!client) return
+
+  const summary = {
+    voice_provider: stat.provider,
+    voice_id: stat.voiceId ?? null,
+    character_count: stat.characterCount ?? 0,
+    duration_seconds: stat.durationSeconds ?? 0,
+    cost_cents: stat.costCents ?? 0,
+  }
+
+  try {
+    const update = await client
+      .from('voice_usage_logs')
+      .update(summary)
+      .eq('organization_id', stat.organizationId)
+      .eq('session_id', stat.sessionId)
+      .select('id')
+
+    const updated = Array.isArray(update?.data) ? update.data.length : 0
+
+    if (!updated) {
+      await client.from('voice_usage_logs').insert({
+        organization_id: stat.organizationId,
+        agent_id: stat.agentId ?? null,
+        voice_provider: stat.provider,
+        voice_id: stat.voiceId ?? null,
+        session_id: stat.sessionId,
+        call_id: stat.callSid ?? null,
+        character_count: stat.characterCount ?? 0,
+        duration_seconds: stat.durationSeconds ?? 0,
+        cost_cents: stat.costCents ?? 0,
+      })
+    }
+  } catch (error) {
+    console.warn('[voice-usage] failed to persist usage', error?.message || error)
+  }
+}
+
+function finalizeSession(streamSid, reason) {
+  const stat = sessionStats.get(streamSid)
+  if (!stat) return
+  sessionStats.delete(streamSid)
+  const elapsedMs = Date.now() - (stat.startedAt ?? Date.now())
+  stat.durationSeconds = Math.max(1, Math.round(elapsedMs / 1000))
+  stat.endReason = reason || 'unknown'
+  if (stat.provider === 'elevenlabs' && ELEVENLABS_PRICE_PER_1K_CHARS_CENTS > 0) {
+    const chars = stat.characterCount ?? 0
+    stat.costCents = Math.round((chars / 1000) * ELEVENLABS_PRICE_PER_1K_CHARS_CENTS)
+  }
+  emitMonitor('voice_session_complete', {
+    streamSid,
+    sessionId: stat.sessionId,
+    organizationId: stat.organizationId || undefined,
+    agentId: stat.agentId || undefined,
+    callSid: stat.callSid || undefined,
+    provider: stat.provider,
+    voiceId: stat.voiceId || undefined,
+    durationSeconds: stat.durationSeconds,
+    characterCount: stat.characterCount ?? 0,
+    costCents: stat.costCents ?? 0,
+    fallbacks: stat.fallbacks ?? 0,
+    retries: stat.retries ?? 0,
+    reason: stat.endReason,
+  })
+  upsertVoiceUsage(stat).catch((err) => {
+    console.warn('[voice-usage] persist error', err)
+  })
 }
 
 const OAI_KEY = process.env.OPENAI_API_KEY
@@ -142,6 +241,7 @@ wss.on('connection', (ws) => {
   // Track current response for audio fallback
   let curHasAudio = false
   let curTranscript = ''
+  let synthesisStrategy = null
 
   // --- OpenAI Realtime state ---
   let oai = { ws: /** @type {import('ws')} */ (null), ready: false, appendPending: 0, lastCommitTs: 0 }
@@ -183,11 +283,18 @@ wss.on('connection', (ws) => {
 
   let oaiOutputIsUlaw = false
 
-  function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt) {
+function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, opts = {}) {
   if (!OAI_KEY) return
   try {
       const model = process.env.OPENAI_REALTIME_MODEL || 'gpt-4o-realtime-preview-2024-12-17'
       const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
+      const audioStrategy = {
+        provider: 'openai',
+        emitMuLawBase64: () => {},
+        sendText: undefined,
+        flush: undefined,
+        ...opts.audio,
+      }
       const rws = new WebSocket(url, { headers: { Authorization: `Bearer ${OAI_KEY}`, 'OpenAI-Beta': 'realtime=v1' }, perMessageDeflate: false })
       let initialTurnSent = false
       rws.on('open', () => {
@@ -206,7 +313,7 @@ wss.on('connection', (ws) => {
         // Normalize voice labels to OpenAI identifiers when possible
         const v = normalizeVoiceId(voice)
         // Select μ-law passthrough to Twilio like the reference example
-        oaiOutputIsUlaw = true
+        oaiOutputIsUlaw = audioStrategy.provider === 'openai'
         rws.send(JSON.stringify({
           type: 'session.update',
           session: {
@@ -387,12 +494,15 @@ wss.on('connection', (ws) => {
           }
           // Handle audio deltas: downsample, encode, and forward
           if ((msg?.type === 'response.output_audio.delta' || msg?.type === 'response.audio.delta')) {
+            if (audioStrategy.provider === 'elevenlabs') {
+              return
+            }
             curHasAudio = true
             const b64 = typeof msg.delta === 'string' ? msg.delta : (typeof msg.audio === 'string' ? msg.audio : null)
             if (!b64) return
             if (oaiOutputIsUlaw) {
               // Pass-through: forward μ-law base64 directly to Twilio like the reference example
-              sendTwilioAudioB64(ws, streamSid, b64)
+              audioStrategy.emitMuLawBase64(b64)
             } else {
               // Fallback path: decode 24k PCM, resample, μ-law encode, and pace
               const pcm24k = b64ToPcm16(b64)
@@ -426,6 +536,20 @@ wss.on('connection', (ws) => {
           if (msg?.type === 'response.audio_transcript.delta') {
             const d = (msg.delta || '').toString()
             curTranscript += d
+          }
+          if (msg?.type === 'response.text.delta') {
+            const d = (msg.delta || '').toString()
+            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.sendText) {
+              if (d) {
+                curHasAudio = true
+                audioStrategy.sendText(d)
+              }
+            }
+          }
+          if (msg?.type === 'response.text.done') {
+            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
+              audioStrategy.flush()
+            }
           }
           // Let server VAD create responses; avoid double-create (active response error)
           // Mark greeting as complete on first completed response
@@ -485,13 +609,22 @@ wss.on('connection', (ws) => {
                 }
               } catch (_) { /* ignore */ }
             }
+            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
+              audioStrategy.flush()
+            }
           }
           if (msg?.type === 'error' || msg?.error) {
             console.warn('[oai.msg.error]', msg?.error || msg)
           }
         } catch (e) { /* ignore */ }
       })
-      rws.on('close', () => { oai.ready = false; console.log('[oai.close]') })
+      rws.on('close', () => {
+        oai.ready = false
+        if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
+          try { audioStrategy.flush() } catch (_) { /* noop */ }
+        }
+        console.log('[oai.close]')
+      })
       rws.on('error', (e) => { console.warn('[oai.error]', e?.message) })
     } catch (e) {
       console.warn('[oai.connect.error]', e?.message)
@@ -543,6 +676,12 @@ wss.on('connection', (ws) => {
         let agentPrompt = 'You are a helpful voice assistant.'
         let agentName = ''
         let agentVoice = ''
+        let agentVoiceProvider = 'openai'
+        let elevenlabsVoiceId = null
+        let elevenlabsVoiceSettings = null
+        let voiceFallbackEnabled = true
+        synthesisStrategy = null
+        let usingElevenLabs = false
         if (orgId) {
           let agent
           if (agentId && agentId !== 'default') {
@@ -550,7 +689,7 @@ wss.on('connection', (ws) => {
             if (s) {
             const { data } = await s
               .from('agent_configurations')
-              .select('id, display_name, greeting, language, prompt, voice')
+              .select('id, display_name, greeting, language, prompt, voice, voice_provider, elevenlabs_voice_id, elevenlabs_voice_settings, voice_fallback_enabled')
               .eq('organization_id', orgId)
               .eq('id', agentId)
               .single()
@@ -561,7 +700,7 @@ wss.on('connection', (ws) => {
             if (s) {
             const { data } = await s
               .from('agent_configurations')
-              .select('id, display_name, greeting, language, prompt, voice')
+              .select('id, display_name, greeting, language, prompt, voice, voice_provider, elevenlabs_voice_id, elevenlabs_voice_settings, voice_fallback_enabled')
               .eq('organization_id', orgId)
               .eq('name', 'default')
               .single()
@@ -575,6 +714,12 @@ wss.on('connection', (ws) => {
             if (agent.prompt) agentPrompt = agent.prompt
             if (agent.display_name) agentName = agent.display_name
             if (agent.voice) agentVoice = agent.voice
+            if (agent.voice_provider) agentVoiceProvider = agent.voice_provider
+            if (agent.elevenlabs_voice_id) elevenlabsVoiceId = agent.elevenlabs_voice_id
+            if (agent.elevenlabs_voice_settings) elevenlabsVoiceSettings = agent.elevenlabs_voice_settings
+            if (typeof agent.voice_fallback_enabled === 'boolean') {
+              voiceFallbackEnabled = agent.voice_fallback_enabled
+            }
           }
         }
         // Prefer DB-configured voice
@@ -588,12 +733,246 @@ wss.on('connection', (ws) => {
           name: agentName || undefined,
           language: agentLanguage,
           voice: selectedVoice,
+          voiceProvider: agentVoiceProvider,
           greeting: preview(greeting),
           prompt: preview(agentPrompt)
         })
 
-        // Connect OpenAI Realtime and have it speak the greeting first
-        connectOpenAIRealtime(selectedVoice, greeting, agentLanguage, agentPrompt)
+        const audioStrategy = {
+          provider: 'openai',
+          emitMuLawBase64: (payload) => sendTwilioAudioB64(ws, streamSid, payload),
+          sendText: undefined,
+          flush: undefined,
+        }
+
+        const attemptElevenLabs =
+          agentVoiceProvider === 'elevenlabs' &&
+          !!process.env.ELEVENLABS_API_KEY &&
+          !!elevenlabsVoiceId
+
+        if (attemptElevenLabs) {
+          const MAX_ELEVENLABS_RETRIES = Number(process.env.ELEVENLABS_MAX_RETRIES || '1')
+          let attempts = 0
+          const createElevenLabsStrategy = async (strategy) => {
+            attempts += 1
+            const statAttempt = sessionStats.get(streamSid)
+            if (statAttempt) {
+              statAttempt.retries = Math.max(0, attempts - 1)
+            }
+            emitMonitor('elevenlabs_stream_attempt', {
+              streamSid,
+              sessionId: statAttempt?.sessionId,
+              organizationId: statAttempt?.organizationId || undefined,
+              agentId: statAttempt?.agentId || undefined,
+              callSid: statAttempt?.callSid || undefined,
+              voiceId: elevenlabsVoiceId,
+              attempt: attempts,
+              maxRetries: MAX_ELEVENLABS_RETRIES,
+            })
+            const elevenlabsClient = new ElevenLabsStream({
+              apiKey: process.env.ELEVENLABS_API_KEY,
+              voiceId: elevenlabsVoiceId,
+              voiceSettings: elevenlabsVoiceSettings || undefined,
+            })
+            await elevenlabsClient.connect(
+              (chunk) => {
+                const payload = Buffer.from(chunk).toString('base64')
+                sendTwilioAudioB64(ws, streamSid, payload)
+              },
+              async (err) => {
+                console.warn('[elevenlabs.stream.error]', err?.message || err)
+                const stat = sessionStats.get(streamSid)
+                emitMonitorError('elevenlabs_stream_error', err, {
+                  streamSid,
+                  sessionId: stat?.sessionId,
+                  organizationId: stat?.organizationId || undefined,
+                  agentId: stat?.agentId || undefined,
+                  callSid: stat?.callSid || undefined,
+                  voiceId: elevenlabsVoiceId,
+                  attempt: attempts,
+                })
+                if (stat) {
+                  stat.provider = 'openai'
+                  stat.voiceId = selectedVoice
+                  stat.fallbacks = (stat.fallbacks || 0) + 1
+                }
+                if (voiceFallbackEnabled) {
+                  usingElevenLabs = false
+                  synthesisStrategy = null
+                  strategy.provider = 'openai'
+                  strategy.sendText = undefined
+                  strategy.flush = undefined
+                  if (attempts <= MAX_ELEVENLABS_RETRIES) {
+                    console.log('[elevenlabs.retry]', { attempt: attempts, streamSid })
+                    emitMonitor('elevenlabs_retry_scheduled', {
+                      streamSid,
+                      sessionId: stat?.sessionId,
+                      attempt: attempts,
+                      maxRetries: MAX_ELEVENLABS_RETRIES,
+                    })
+                    try {
+                      synthesisStrategy = await createElevenLabsStrategy(strategy)
+                      usingElevenLabs = true
+                      strategy.provider = 'elevenlabs'
+                      strategy.sendText = synthesisStrategy.sendText
+                      strategy.flush = synthesisStrategy.flush
+                      return
+                    } catch (retryErr) {
+                      console.warn('[elevenlabs.retry.error]', retryErr?.message || retryErr)
+                      emitMonitorError('elevenlabs_retry_failed', retryErr, {
+                        streamSid,
+                        sessionId: stat?.sessionId,
+                        attempt: attempts,
+                        maxRetries: MAX_ELEVENLABS_RETRIES,
+                      })
+                    }
+                  }
+                  console.log('[elevenlabs.fallback]', { streamSid })
+                  emitMonitor('elevenlabs_fallback_to_openai', {
+                    streamSid,
+                    sessionId: stat?.sessionId,
+                    organizationId: stat?.organizationId || undefined,
+                    agentId: stat?.agentId || undefined,
+                    callSid: stat?.callSid || undefined,
+                    totalFallbacks: stat?.fallbacks ?? 1,
+                  })
+                } else {
+                  emitMonitor('elevenlabs_terminated_no_fallback', {
+                    streamSid,
+                    sessionId: stat?.sessionId,
+                    organizationId: stat?.organizationId || undefined,
+                    agentId: stat?.agentId || undefined,
+                    callSid: stat?.callSid || undefined,
+                  })
+                  try { ws.close(1011, 'ElevenLabs stream error') } catch (_) {}
+                }
+              },
+            )
+            const statActive = sessionStats.get(streamSid)
+            emitMonitor('elevenlabs_stream_connected', {
+              streamSid,
+              sessionId: statActive?.sessionId,
+              organizationId: statActive?.organizationId || undefined,
+              agentId: statActive?.agentId || undefined,
+              callSid: statActive?.callSid || undefined,
+              voiceId: elevenlabsVoiceId,
+              attempt: attempts,
+            })
+            const sendText = (text) => {
+              if (!text) return
+              const statUpdate = sessionStats.get(streamSid)
+              if (statUpdate) {
+                statUpdate.characterCount = (statUpdate.characterCount || 0) + text.length
+              }
+              try {
+                elevenlabsClient.sendText(text)
+              } catch (err) {
+                console.warn('[elevenlabs.sendText.error]', err?.message || err)
+              }
+            }
+            const flush = () => {
+              try {
+                elevenlabsClient.flush()
+              } catch (_) { /* noop */ }
+            }
+            strategy.provider = 'elevenlabs'
+            strategy.sendText = sendText
+            strategy.flush = flush
+            return {
+              provider: 'elevenlabs',
+              sendText,
+              flush,
+              shutdown: async () => {
+                try {
+                  await elevenlabsClient.disconnect()
+                } catch (_) { /* noop */ }
+              },
+            }
+          }
+          try {
+            synthesisStrategy = await createElevenLabsStrategy(audioStrategy)
+            usingElevenLabs = true
+            console.log('[elevenlabs.active]', { voiceId: elevenlabsVoiceId })
+            const statActive = sessionStats.get(streamSid)
+            if (statActive) {
+              statActive.provider = 'elevenlabs'
+              statActive.voiceId = elevenlabsVoiceId
+            }
+            emitMonitor('elevenlabs_session_active', {
+              streamSid,
+              sessionId: statActive?.sessionId,
+              organizationId: statActive?.organizationId || undefined,
+              agentId: statActive?.agentId || undefined,
+              callSid: statActive?.callSid || undefined,
+              voiceId: elevenlabsVoiceId,
+            })
+          } catch (err) {
+            console.warn('[elevenlabs.init.error]', err?.message || err)
+            const stat = sessionStats.get(streamSid)
+            emitMonitorError('elevenlabs_init_failed', err, {
+              streamSid,
+              sessionId: stat?.sessionId,
+              organizationId: stat?.organizationId || undefined,
+              agentId: stat?.agentId || undefined,
+              callSid: stat?.callSid || undefined,
+              voiceId: elevenlabsVoiceId,
+            })
+            if (!voiceFallbackEnabled) {
+              emitMonitor('elevenlabs_terminated_no_fallback', {
+                streamSid,
+                sessionId: stat?.sessionId,
+                organizationId: stat?.organizationId || undefined,
+                agentId: stat?.agentId || undefined,
+                callSid: stat?.callSid || undefined,
+              })
+              try { ws.close(1011, 'ElevenLabs unavailable') } catch (_) {}
+              return
+            }
+          }
+        }
+
+        const sessionId = params['sessionId'] || crypto.randomUUID()
+        sessionStats.set(streamSid, {
+          sessionId,
+          organizationId: orgId || null,
+          agentId: agentId || null,
+          callSid,
+          provider: usingElevenLabs ? 'elevenlabs' : 'openai',
+          voiceId: usingElevenLabs ? elevenlabsVoiceId : selectedVoice,
+          startedAt: Date.now(),
+          characterCount: 0,
+          costCents: 0,
+          fallbacks: 0,
+          retries: 0,
+          endReason: 'in_progress',
+        })
+
+        emitMonitor('voice_session_start', {
+          streamSid,
+          sessionId,
+          organizationId: orgId || undefined,
+          agentId: agentId || undefined,
+          callSid: callSid || undefined,
+          provider: usingElevenLabs ? 'elevenlabs' : 'openai',
+          voiceId: usingElevenLabs ? elevenlabsVoiceId : selectedVoice,
+          fallbackEnabled: voiceFallbackEnabled,
+        })
+
+        // Connect OpenAI Realtime and have it manage dialogue
+        connectOpenAIRealtime(selectedVoice, greeting, agentLanguage, agentPrompt, {
+          audio: (() => {
+            if (usingElevenLabs && synthesisStrategy) {
+              audioStrategy.provider = 'elevenlabs'
+              audioStrategy.sendText = synthesisStrategy.sendText
+              audioStrategy.flush = synthesisStrategy.flush
+            } else {
+              audioStrategy.provider = 'openai'
+              audioStrategy.sendText = undefined
+              audioStrategy.flush = undefined
+            }
+            return audioStrategy
+          })(),
+        })
         // Safety timer to avoid blocking if greeting doesn't complete
         setTimeout(() => { if (!greetingDone) { greetingDone = true; console.log('[oai.greeting.timeout]') } }, 12000)
       }
@@ -611,6 +990,7 @@ wss.on('connection', (ws) => {
       }
 
       if (msg.event === 'stop') {
+        finalizeSession(streamSid, 'stop')
         try { ws.close() } catch (e) { /* ignore */ }
       }
     } catch (e) {
@@ -624,6 +1004,10 @@ wss.on('connection', (ws) => {
     waitingForUser = false
     agentSpeakingNow = false
     greetConsentRequired = false
+    if (synthesisStrategy && typeof synthesisStrategy.shutdown === 'function') {
+      Promise.resolve(synthesisStrategy.shutdown()).catch(() => {})
+    }
+    finalizeSession(streamSid, 'close')
   })
 })
 

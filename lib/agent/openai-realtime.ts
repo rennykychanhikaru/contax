@@ -44,6 +44,12 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   private consentRequired: boolean = false
   private greetingInProgress: boolean = false
   private baseSystemPrompt: string | undefined
+  private voiceMetadata: { provider: 'openai' | 'elevenlabs'; voice?: string; voiceId?: string; voiceSettings?: unknown; modelId?: string; sessionId?: string } | null = null
+  private remoteAudioStream: MediaStream | null = null
+  private elevenLabsEnabled = false
+  private elevenLabsQueue: Promise<void> = Promise.resolve()
+  private elevenLabsQueueVersion = 0
+  private elevenLabsCharCount = 0
 
   constructor(opts?: {
     onTranscript?: (text: string) => void
@@ -52,6 +58,16 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     onSlots?: (slots: Array<{ start: string; end: string }>, tz?: string) => void
   }) {
     this.audioEl = new Audio()
+    this.audioEl.autoplay = true
+    this.audioEl.playsInline = true
+    this.audioEl.controls = false
+    this.audioEl.muted = true
+    this.audioEl.volume = 1
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      this.audioEl.dataset.voiceAgentAudio = 'preview'
+      this.audioEl.style.display = 'none'
+      document.body.appendChild(this.audioEl)
+    }
     this.onTranscript = opts?.onTranscript
     this.onAgentTranscript = opts?.onAgentTranscript
     this.onToolEvent = opts?.onToolEvent
@@ -60,6 +76,234 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
 
   setCalendarIds(ids: string[] | undefined) {
     this.calendarIds = ids && ids.length ? [...ids] : undefined
+  }
+
+  private bumpElevenLabsQueueVersion() {
+    this.elevenLabsQueueVersion += 1
+    this.elevenLabsQueue = Promise.resolve()
+  }
+
+  private setElevenLabsEnabled(enabled: boolean) {
+    if (this.elevenLabsEnabled === enabled) return
+    this.elevenLabsEnabled = enabled
+    this.bumpElevenLabsQueueVersion()
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] set enabled', { enabled })
+    try {
+      this.audioEl.pause()
+    } catch {
+      void 0
+    }
+    this.audioEl.currentTime = 0
+    this.audioEl.src = ''
+    if (enabled) {
+      this.audioEl.srcObject = null
+      this.audioEl.muted = false
+    } else if (this.remoteAudioStream) {
+      this.audioEl.srcObject = this.remoteAudioStream
+      this.audioEl.muted = false
+      this.audioEl.play().catch(() => {})
+    } else {
+      this.audioEl.srcObject = null
+      this.audioEl.muted = false
+    }
+  }
+
+  private resetElevenLabsPlayback() {
+    if (!this.elevenLabsEnabled) return
+    this.bumpElevenLabsQueueVersion()
+    try {
+      this.audioEl.pause()
+    } catch {
+      void 0
+    }
+    this.audioEl.currentTime = 0
+    this.audioEl.src = ''
+  }
+
+  private handleRemoteTrack(stream: MediaStream) {
+    this.remoteAudioStream = stream
+    if (!this.elevenLabsEnabled) {
+      this.audioEl.srcObject = stream
+      this.audioEl.muted = false
+      this.audioEl.play().catch(() => {})
+    }
+  }
+
+  private enqueueElevenLabsSpeech(text: string) {
+    if (!this.elevenLabsEnabled) return
+    const trimmed = text.trim()
+    if (!trimmed.length) return
+
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] enqueue', { chars: trimmed.length })
+
+    const version = this.elevenLabsQueueVersion
+    this.elevenLabsCharCount += trimmed.length
+    this.elevenLabsQueue = this.elevenLabsQueue
+      .then(async () => {
+        if (!this.elevenLabsEnabled || this.elevenLabsQueueVersion !== version) return
+        const result = await this.synthesizeElevenLabs(trimmed)
+        await this.playElevenLabsAudio(result.audio, result.contentType, version)
+      })
+      .catch((err) => {
+        this.handleElevenLabsFailure(err)
+      })
+  }
+
+  private async synthesizeElevenLabs(text: string): Promise<{ audio: Uint8Array; contentType: string }> {
+    if (!this.defaultOrgId || !this.defaultAgentId || this.voiceMetadata?.provider !== 'elevenlabs') {
+      throw new Error('Missing ElevenLabs session metadata')
+    }
+
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] synthesize', {
+      org: this.defaultOrgId,
+      agent: this.defaultAgentId,
+      voiceId: this.voiceMetadata.voiceId,
+      chars: text.length
+    })
+
+    const res = await fetch('/api/voice/elevenlabs-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        organizationId: this.defaultOrgId,
+        agentId: this.defaultAgentId,
+        action: 'generate',
+        text,
+        voiceId: this.voiceMetadata.voiceId,
+        voiceSettings: this.voiceMetadata.voiceSettings
+      })
+    })
+
+    const status = res.status
+
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] proxy response', { status })
+
+    let payload: unknown = null
+    try {
+      payload = await res.json()
+    } catch {
+      payload = null
+    }
+
+    if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.warn('[voice-agent.elevenlabs] proxy error', payload)
+      const message =
+        payload &&
+        typeof payload === 'object' &&
+        payload !== null &&
+        'error' in payload &&
+        typeof (payload as { error: unknown }).error === 'string'
+          ? (payload as { error: string }).error
+          : `ElevenLabs synthesis failed (${res.status})`
+      throw new Error(message)
+    }
+
+    if (
+      !payload ||
+      typeof payload !== 'object' ||
+      !('audio' in payload) ||
+      typeof (payload as { audio: unknown }).audio !== 'string'
+    ) {
+      throw new Error('Invalid ElevenLabs response payload')
+    }
+
+    const audioB64 = (payload as { audio: string }).audio
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] audio b64 length', audioB64?.length)
+
+    let binary = ''
+    try {
+      binary = atob(audioB64)
+    } catch (err) {
+      console.warn('[voice-agent.elevenlabs] atob failed', err)
+      throw new Error('Failed to decode ElevenLabs audio payload')
+    }
+
+    const buffer = new ArrayBuffer(binary.length)
+    const bytes = new Uint8Array(buffer)
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+
+    const byteLength = bytes.length
+
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] received audio', { bytes: byteLength })
+
+    const contentType =
+      'contentType' in (payload as Record<string, unknown>) &&
+      typeof (payload as { contentType?: unknown }).contentType === 'string' &&
+      (payload as { contentType?: string }).contentType
+        ? (payload as { contentType: string }).contentType
+        : 'audio/mpeg'
+
+    return { audio: bytes, contentType }
+  }
+
+  private async playElevenLabsAudio(audio: Uint8Array, contentType: string, version: number): Promise<void> {
+    if (!this.elevenLabsEnabled || this.elevenLabsQueueVersion !== version) return
+    const blob = new Blob([audio], { type: contentType || 'audio/mpeg' })
+    // eslint-disable-next-line no-console
+    console.debug('[voice-agent.elevenlabs] blob size', blob.size, contentType)
+    const url = URL.createObjectURL(blob)
+    try {
+      this.audioEl.srcObject = null
+      this.audioEl.src = url
+      this.audioEl.currentTime = 0
+      this.audioEl.muted = false
+      const playPromise = this.audioEl.play()
+      try {
+        await playPromise
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[voice-agent.elevenlabs] play() rejected', err)
+        throw err instanceof Error ? err : new Error(String(err))
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          this.audioEl.removeEventListener('ended', onEnded)
+          this.audioEl.removeEventListener('error', onError)
+          this.audioEl.removeEventListener('pause', onPause)
+        }
+        const onEnded = () => {
+          cleanup()
+          resolve()
+        }
+        const onError = () => {
+          cleanup()
+          reject(new Error('Audio playback error'))
+        }
+        const onPause = () => {
+          if (!this.elevenLabsEnabled || this.elevenLabsQueueVersion !== version) {
+            cleanup()
+            resolve()
+          }
+        }
+
+        this.audioEl.addEventListener('ended', onEnded, { once: true })
+        this.audioEl.addEventListener('error', onError, { once: true })
+        this.audioEl.addEventListener('pause', onPause)
+      })
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+  }
+
+  private handleElevenLabsFailure(error: unknown) {
+    console.warn('[voice-agent.elevenlabs] playback failure, falling back to OpenAI audio', error)
+    if (!this.elevenLabsEnabled) return
+    this.setElevenLabsEnabled(false)
+    this.audioEl.muted = false
+    this.audioEl.play().catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[voice-agent.elevenlabs] fallback play failed', err)
+    })
   }
 
   private requireTool(name: 'check' | 'slots') {
@@ -225,6 +469,7 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         systemPrompt,
         organizationId: opts?.organizationId,
         calendarId: opts?.calendarId || 'primary',
+        agentId: opts?.agentId,
         greeting: opts?.greeting,
         language: opts?.language || 'en-US',
         timeZone: opts?.timeZone
@@ -234,18 +479,27 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     if (!session?.client_secret?.value || !session?.model) {
       throw new Error('Failed to obtain Realtime session')
     }
+    this.voiceMetadata = session.voice_metadata ?? null
 
     this.defaultOrgId = opts?.organizationId
     this.defaultCalendarId = opts?.calendarId || 'primary'
     this.defaultAgentId = opts?.agentId
     this.tz = opts?.timeZone
+    this.remoteAudioStream = null
+    this.elevenLabsCharCount = 0
+
+    const shouldUseElevenLabs =
+      this.voiceMetadata?.provider === 'elevenlabs' &&
+      !!this.voiceMetadata.voiceId &&
+      !!this.defaultOrgId &&
+      !!this.defaultAgentId
+    this.setElevenLabsEnabled(shouldUseElevenLabs)
 
     const pc = new RTCPeerConnection()
     this.pc = pc
     pc.ontrack = (e) => {
       const [stream] = e.streams
-      this.audioEl.srcObject = stream
-      this.audioEl.play().catch(() => {})
+      this.handleRemoteTrack(stream)
     }
 
     // Receive events from OpenAI
@@ -388,6 +642,18 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
     this.toolArgsBuffers.clear()
     this.dataChannel = null
     this.pendingMessages = []
+    this.remoteAudioStream = null
+    this.setElevenLabsEnabled(false)
+    this.elevenLabsCharCount = 0
+    try {
+      this.audioEl.pause()
+    } catch {
+      void 0
+    }
+    this.audioEl.srcObject = null
+    this.audioEl.src = ''
+    this.audioEl.muted = true
+    this.voiceMetadata = null
   }
 
   private handleOAIEvent = (raw: unknown) => {
@@ -408,6 +674,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       }
       // Track assistant speaking lifecycle for barge-in handling
       if (msg.type === 'response.started') {
+        if (this.elevenLabsEnabled) {
+          this.resetElevenLabsPlayback()
+        }
         this.agentSpeaking = true
       }
       if (msg.type === 'response.completed' || msg.type === 'response.audio.done' || msg.type === 'response.done') {
@@ -422,6 +691,12 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
       // If still waiting for consent, cancel assistant responses immediately (but not during greeting)
       if ((msg.type === 'response.created' || msg.type === 'response.started') && this.waitingForUser && !this.greetingInProgress) {
         this.sendOAI({ type: 'response.cancel' })
+      }
+      if (
+        (msg.type === 'response.canceled' || msg.type === 'response.cancelled') &&
+        this.elevenLabsEnabled
+      ) {
+        this.resetElevenLabsPlayback()
       }
 
       // Simple transcript tap if present
@@ -487,6 +762,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         if (this.onAgentTranscript) {
           this.onAgentTranscript(final, true)
         }
+        if (this.elevenLabsEnabled) {
+          this.enqueueElevenLabsSpeech(final)
+        }
       }
       // Also handle text output events (when audio is disabled)
       if (msg.type === 'response.text.delta') {
@@ -501,6 +779,9 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
         this.currentAgentTranscript = ''
         if (this.onAgentTranscript) {
           this.onAgentTranscript(final, true)
+        }
+        if (this.elevenLabsEnabled) {
+          this.enqueueElevenLabsSpeech(final)
         }
       }
 
@@ -791,6 +1072,12 @@ export class OpenAIRealtimeAgent implements AgentAdapter {
   }
 
   private sendOAI(msg: unknown) {
+    if (this.elevenLabsEnabled && msg && typeof msg === 'object' && msg !== null) {
+      const type = (msg as { type?: unknown }).type
+      if (type === 'response.cancel') {
+        this.resetElevenLabsPlayback()
+      }
+    }
     const dc = this.dataChannel
     const payload = JSON.stringify(msg)
     if (dc && dc.readyState === 'open') {

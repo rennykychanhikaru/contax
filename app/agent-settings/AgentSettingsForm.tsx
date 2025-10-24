@@ -4,11 +4,11 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2, Save, RotateCcw, Info, Volume2 } from 'lucide-react';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Loader2, Save, RotateCcw, Info } from 'lucide-react';
 import CalendarIntegration from './CalendarIntegration';
 import WebhookSettings from './WebhookSettings';
 import { useAgentSettings } from '@/lib/hooks/useAgentSettings';
+import VoiceProviderSelector from '@/components/voice-settings/VoiceProviderSelector';
 import {
   Tooltip,
   TooltipContent,
@@ -16,21 +16,19 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 
-// Available OpenAI voices for the Realtime API
-const VOICE_OPTIONS = [
-  { value: 'alloy', label: 'Alloy - Female (Balanced, neutral)' },
-  { value: 'shimmer', label: 'Shimmer - Female (Warm, friendly)' },
-  { value: 'echo', label: 'Echo - Male (Smooth, confident)' },
-  { value: 'sage', label: 'Sage - Male (Clear, authoritative)' },
-  { value: 'verse', label: 'Verse - Male (Energetic, expressive)' },
-];
-
 export default function AgentSettingsForm({ agentId }: { agentId: string | null }) {
   const {
+    agentId: resolvedAgentId,
+    organizationId,
     displayName, setDisplayName,
     prompt, setPrompt,
     greeting, setGreeting,
     voice, setVoice,
+    voiceProvider, setVoiceProvider,
+    elevenlabsVoiceId, setElevenlabsVoiceId,
+    elevenlabsVoiceSettings,
+    setElevenlabsVoiceSettings,
+    voiceFallbackEnabled, setVoiceFallbackEnabled,
     webhookEnabled, setWebhookEnabled,
     webhookUrl,
     twilioConfigured,
@@ -51,7 +49,7 @@ export default function AgentSettingsForm({ agentId }: { agentId: string | null 
 
   return (
     <TooltipProvider>
-    <div className="space-y-4">
+      <div className="space-y-4">
       <div>
         <Label htmlFor="agent-name">Agent Name</Label>
         <p className="text-sm text-gray-500 mb-2">
@@ -119,27 +117,23 @@ export default function AgentSettingsForm({ agentId }: { agentId: string | null 
         />
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Label htmlFor="agent-voice">Agent Voice</Label>
-          <Volume2 className="h-4 w-4 text-gray-400" />
-        </div>
-        <p className="text-sm text-gray-500">
-          Choose the voice personality for your agent.
-        </p>
-        <Select value={voice} onValueChange={setVoice} disabled={isSaving}>
-          <SelectTrigger id="agent-voice" className="w-full">
-            <SelectValue placeholder="Select a voice" />
-          </SelectTrigger>
-          <SelectContent>
-            {VOICE_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <VoiceProviderSelector
+        agentId={resolvedAgentId ?? agentId}
+        organizationId={organizationId}
+        voiceProvider={voiceProvider}
+        onProviderChange={(provider) => setVoiceProvider(provider)}
+        openAIVoice={voice}
+        onOpenAIVoiceChange={setVoice}
+        elevenlabsVoiceId={elevenlabsVoiceId}
+        elevenlabsVoiceSettings={elevenlabsVoiceSettings}
+        onElevenLabsVoiceChange={(voiceId, settings) => {
+          setElevenlabsVoiceId(voiceId);
+          setElevenlabsVoiceSettings(settings ?? null);
+        }}
+        voiceFallbackEnabled={voiceFallbackEnabled}
+        onToggleFallback={(value) => setVoiceFallbackEnabled(value)}
+        isSaving={isSaving}
+      />
 
       <WebhookSettings 
         webhookEnabled={webhookEnabled} 
@@ -188,7 +182,7 @@ export default function AgentSettingsForm({ agentId }: { agentId: string | null 
           Reset to Default
         </Button>
       </div>
-    </div>
+      </div>
     </TooltipProvider>
   );
 }

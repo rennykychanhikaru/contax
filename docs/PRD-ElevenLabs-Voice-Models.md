@@ -976,12 +976,12 @@ export function VoiceProviderSelector({
 
 **Tasks**:
 
-- [ ] Create feature flags tables and migration
-- [ ] Create subscription addons tables
-- [ ] Create voice usage logging tables
-- [ ] Implement `FeatureFlagService` class
-- [ ] Add voice provider fields to `agent_configurations`
-- [ ] Create RLS policies for new tables
+- [x] Create feature flags tables and migration
+- [x] Create subscription addons tables
+- [x] Create voice usage logging tables
+- [x] Implement `FeatureFlagService` class
+- [x] Add voice provider fields to `agent_configurations`
+- [x] Create RLS policies for new tables
 
 **Pseudo Code**:
 
@@ -1048,12 +1048,23 @@ class FeatureFlagService {
 
 **Tasks**:
 
-- [ ] Create `ElevenLabsClient` class
-- [ ] Implement WebSocket streaming
-- [ ] Create voice provider interface/types
-- [ ] Implement `VoiceProviderFactory`
-- [ ] Add adapter layer for OpenAI & ElevenLabs
-- [ ] Create secure proxy API route
+- [x] Update OpenAIRealtimeAgent to support provider switching
+- [x] Modify `/api/realtime/token` route for provider selection
+- [x] Implement audio bridging for ElevenLabs → Twilio
+- [ ] Add usage logging for billing
+- [ ] Handle provider failures gracefully
+- [ ] Add monitoring/observability
+
+**Execution Strategy Update**:
+
+Instead of refactoring the existing OpenAI realtime pipeline in place, we will stand up a dedicated ElevenLabs streaming path that runs in parallel:
+
+- Keep the current OpenAI → Twilio flow untouched for the default experience and as a guaranteed fallback.
+- When an agent is configured for ElevenLabs (and the org passes feature + subscription checks), spin up a separate ElevenLabs WebSocket bridge that emits μ-law audio directly to Twilio while still leveraging OpenAI realtime for transcripts and tool orchestration.
+- Share session metadata between the two pipelines so usage logging (characters, duration, cost) lands in `voice_usage_logs` regardless of provider.
+- Instrument both paths so we can monitor quality/latency before promoting ElevenLabs beyond feature-flagged orgs.
+
+This approach reduces regression risk and lets us roll out ElevenLabs incrementally—paid orgs get the premium audio experience while everyone else continues using the existing OpenAI stack.
 
 **Pseudo Code**:
 
@@ -1137,12 +1148,12 @@ POST /api/voice/elevenlabs-proxy {
 
 **Tasks**:
 
-- [ ] Update OpenAIRealtimeAgent to support provider switching
-- [ ] Modify `/api/realtime/token` route for provider selection
-- [ ] Implement audio bridging for ElevenLabs → Twilio
-- [ ] Add usage logging for billing
-- [ ] Handle provider failures gracefully
-- [ ] Add monitoring/observability
+- [x] Update OpenAIRealtimeAgent to support provider switching (metadata captured; UI playback pending)
+- [x] Modify `/api/realtime/token` route for provider selection
+- [x] Implement audio bridging for ElevenLabs → Twilio (server-side bridge complete)
+- [x] Add usage logging for billing (character/duration/cost aggregation outstanding)
+- [x] Handle provider failures gracefully (structured retries/alerting)
+- [x] Add monitoring/observability (voice bridge emits structured ElevenLabs session events)
 
 **Pseudo Code**:
 
