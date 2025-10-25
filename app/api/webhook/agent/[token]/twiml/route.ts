@@ -39,7 +39,7 @@ export async function POST(
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || `https://${req.headers.get('host')}`;
     const wsUrl = explicitWss ? `${explicitWss.replace(/\/$/, '')}/twilio-media` : `wss://${new URL(baseUrl).host}/api/twilio/media-stream`;
     const connect = response.connect();
-    const stream = connect.stream({ url: wsUrl });
+    const stream = connect.stream({ url: wsUrl, track: 'both_tracks' });
     // Create short-lived auth token to protect media stream from abuse
     const authSecret = process.env.STREAM_AUTH_SECRET || '';
     const now = Math.floor(Date.now() / 1000);

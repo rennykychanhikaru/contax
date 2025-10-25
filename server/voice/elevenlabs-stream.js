@@ -49,9 +49,11 @@ class ElevenLabsStream {
         try {
           this.ws.send(
             JSON.stringify({
+              xi_api_key: this.config.apiKey,
               text: ' ',
               voice_settings: this.config.voiceSettings,
               generation_config: { chunk_length_schedule: [120, 160, 250, 290] },
+              try_trigger_generation: false,
             }),
           );
           resolve();
@@ -89,8 +91,14 @@ class ElevenLabsStream {
         reject(errorObj);
       });
 
-      this.ws.once('close', () => {
+      this.ws.on('close', (code, reason) => {
         cleanup();
+        const info = Buffer.isBuffer(reason) ? reason.toString('utf8') : reason;
+        console.log('[elevenlabs.ws.close]', { code, reason: info, wasExpected: code === 1000 });
+        if (code !== 1000) {
+          const errorObj = new Error(`ElevenLabs stream closed: ${code} ${info || ''}`.trim());
+          if (this.onError) this.onError(errorObj);
+        }
         this.ws = null;
       });
     });
@@ -102,6 +110,7 @@ class ElevenLabsStream {
     }
     this.ws.send(
       JSON.stringify({
+        xi_api_key: this.config.apiKey,
         text,
         try_trigger_generation: true,
       }),
@@ -110,7 +119,7 @@ class ElevenLabsStream {
 
   flush() {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    this.ws.send(JSON.stringify({ text: '' }));
+    this.ws.send(JSON.stringify({ xi_api_key: this.config.apiKey, text: '' }));
   }
 
   async disconnect() {

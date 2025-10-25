@@ -1218,6 +1218,7 @@ function handleElevenLabsAudio(audioChunk: Uint8Array) {
 - ✅ Usage is logged for every voice generation
 - ✅ Errors are handled gracefully with fallback
 - ✅ End-to-end test: user makes call → hears ElevenLabs voice
+- ✅ Integration test (`tests/voice/openai-realtime-elevenlabs.spec.ts`) covers ElevenLabs playback and fallback logic
 
 ---
 

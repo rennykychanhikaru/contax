@@ -63,6 +63,160 @@ function sendTwilioAudioB64(ws, streamSid, payloadB64) {
   ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload: payloadB64 } }))
 }
 
+async function synthesizeElevenLabsClip({ text, voiceId, voiceSettings }) {
+  const apiKey = process.env.ELEVENLABS_API_KEY
+  if (!apiKey) {
+    console.warn('[elevenlabs.rest] ELEVENLABS_API_KEY not set')
+    return null
+  }
+  try {
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: {
+        'xi-api-key': apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        model_id: process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5',
+        voice_settings: voiceSettings || undefined,
+        output_format: 'ulaw_8000',
+      }),
+    })
+    if (!response.ok) {
+      console.warn('[elevenlabs.rest] request failed', response.status, await response.text().catch(() => ''))
+      return null
+    }
+    const buffer = await response.arrayBuffer()
+    if (!buffer || buffer.byteLength === 0) {
+      console.warn('[elevenlabs.rest] empty response body')
+      return null
+    }
+    const contentType = (response.headers.get('content-type') || '').toLowerCase()
+    const normalized = normalizeElevenLabsResponse(buffer, contentType)
+    if (!normalized || !normalized.bytes || !normalized.bytes.length) {
+      console.warn('[elevenlabs.rest] normalization produced no audio', normalized?.meta?.reason || '')
+      return null
+    }
+    return {
+      bytes: normalized.bytes,
+      meta: {
+        ...normalized.meta,
+        contentType,
+        charLength: typeof text === 'string' ? text.length : 0,
+      },
+    }
+  } catch (error) {
+    console.warn('[elevenlabs.rest] unexpected error', error?.message || error)
+    return null
+  }
+}
+
+function playMuLawBytes(ws, streamSid, bytes) {
+  if (!bytes || !bytes.length) return
+  for (let offset = 0; offset < bytes.length; offset += 160) {
+    const slice = bytes.subarray(offset, Math.min(offset + 160, bytes.length))
+    if (slice.length === 160) {
+      sendTwilioAudioB64(ws, streamSid, uint8ToB64(slice))
+    } else {
+      const padded = new Uint8Array(160).fill(0xff)
+      padded.set(slice, 0)
+      sendTwilioAudioB64(ws, streamSid, uint8ToB64(padded))
+    }
+  }
+}
+
+let elevenLabsResamplerCache = null
+function getResamplerInstance(fromRate, toRate) {
+  if (!fromRate || !toRate || fromRate === toRate) return null
+  if (!elevenLabsResamplerCache) elevenLabsResamplerCache = createResamplerCache()
+  if (!elevenLabsResamplerCache) return null
+  return elevenLabsResamplerCache.get(fromRate, toRate)
+}
+
+function looksLikeRiff(buffer) {
+  if (!buffer || buffer.byteLength < 12) return false
+  try {
+    const view = new DataView(buffer)
+    return view.getUint32(0, false) === 0x52494646 && view.getUint32(8, false) === 0x57415645
+  } catch (_) {
+    return false
+  }
+}
+
+function normalizeElevenLabsResponse(buffer, contentType = '') {
+  const meta = {
+    source: 'binary',
+    sampleRate: null,
+    audioFormat: null,
+    bitsPerSample: null,
+    resampled: false,
+    reason: null,
+    rawHeadB64: Buffer.from(new Uint8Array(buffer).subarray(0, Math.min(buffer.byteLength, 64))).toString('base64'),
+  }
+  const lowerType = (contentType || '').toLowerCase()
+  const asUint8 = () => new Uint8Array(buffer)
+
+  const wavLike = lowerType.includes('wav') || looksLikeRiff(buffer)
+  if (wavLike) {
+    const parsed = parseWavHeader(buffer)
+    if (!parsed) {
+      meta.reason = 'wav_parse_failed'
+      meta.source = 'wav_unknown'
+      return { bytes: asUint8(), meta }
+    }
+    meta.sampleRate = parsed.sampleRate
+    meta.audioFormat = parsed.audioFormat
+    meta.bitsPerSample = parsed.bitsPerSample
+    const dataOffset = parsed.dataOffset || 44
+    if (parsed.audioFormat === 7 && parsed.bitsPerSample === 8) {
+      meta.source = 'wav_mulaw'
+      return { bytes: new Uint8Array(buffer, dataOffset), meta }
+    }
+    if (parsed.audioFormat === 1 && parsed.bitsPerSample === 16) {
+      const pcm16 = new Int16Array(buffer, dataOffset, Math.floor((buffer.byteLength - dataOffset) / 2))
+      let pcm8k = pcm16
+      const sr = parsed.sampleRate || 8000
+      if (sr !== 8000) {
+        const resampler = getResamplerInstance(sr, 8000)
+        if (resampler) {
+          pcm8k = resampler.processInt16(pcm16)
+          meta.resampled = true
+          meta.source = `wav_pcm16_${sr}`
+        } else if (sr === 16000) {
+          pcm8k = downsample16kTo8k(pcm16)
+          meta.resampled = true
+          meta.source = 'wav_pcm16_16000'
+        } else if (sr === 24000) {
+          pcm8k = downsample24kTo8kLinear(pcm16)
+          meta.resampled = true
+          meta.source = 'wav_pcm16_24000'
+        } else {
+          meta.reason = `unsupported_sample_rate_${sr}`
+          meta.source = `wav_pcm16_${sr}`
+          return { bytes: new Uint8Array(buffer, dataOffset), meta }
+        }
+      } else {
+        meta.source = 'wav_pcm16_8000'
+      }
+      meta.sampleRate = 8000
+      return { bytes: encodePcm16ToMuLaw(pcm8k), meta }
+    }
+    meta.reason = `unsupported_wav_format_${parsed.audioFormat}_${parsed.bitsPerSample}`
+    meta.source = 'wav_unknown'
+    return { bytes: new Uint8Array(buffer, dataOffset), meta }
+  }
+
+  if (lowerType.includes('mulaw') || lowerType.includes('audio/basic')) {
+    meta.source = 'raw_mulaw'
+    return { bytes: asUint8(), meta }
+  }
+
+  meta.reason = meta.reason || (lowerType ? `unknown_content_type_${lowerType}` : 'unknown_content_type')
+  meta.source = 'binary_unknown'
+  return { bytes: asUint8(), meta }
+}
+
 function emitMonitor(event, details = {}, level = 'info') {
   try {
     const entry = {
@@ -241,10 +395,14 @@ wss.on('connection', (ws) => {
   // Track current response for audio fallback
   let curHasAudio = false
   let curTranscript = ''
-  let synthesisStrategy = null
 
   // --- OpenAI Realtime state ---
   let oai = { ws: /** @type {import('ws')} */ (null), ready: false, appendPending: 0, lastCommitTs: 0 }
+
+  // --- ElevenLabs state ---
+  let elevenLabsStream = null
+  let elevenLabsStreamActive = false
+  let usingElevenLabs = false
 
   // Outbound pacing queue (20ms per frame) with light jitter buffer and telemetry
   const outboundQueue = [] /** @type {Uint8Array[]} */
@@ -269,17 +427,52 @@ wss.on('connection', (ws) => {
       sendTwilioAudio(ws, streamSid, SILENCE_160)
       return
     }
+    // DIAGNOSTIC: Log first frame sent to Twilio
+    if (txFrames === 0) {
+      const hexSample = Array.from(frame.subarray(0, 16))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join(' ')
+      const payload = uint8ToB64(frame)
+      console.log('[tx.first.frame]', {
+        len: frame.length,
+        hexSample,
+        queueSize: outboundQueue.length,
+        streamSid,
+        payloadLength: payload.length,
+        payloadPreview: payload.substring(0, 40)
+      })
+    }
     sendTwilioAudio(ws, streamSid, frame)
     txFrames++
     const now = Date.now()
     if (now - lastTxLog > 1000) {
-      if (txFrames > 0) console.log('[tx.frames]', txFrames, 'in last second')
+      if (txFrames > 0) console.log('[tx.frames]', txFrames, 'in last second', 'queue:', outboundQueue.length)
       txFrames = 0
       lastTxLog = now
     }
   }, 20)
 
   function enqueueMu(mu) { outboundQueue.push(mu) }
+  function queueMuLawClip(bytes) {
+    if (!bytes || !bytes.length) return
+    for (let offset = 0; offset < bytes.length; offset += 160) {
+      const slice = bytes.subarray(offset, Math.min(offset + 160, bytes.length))
+      if (slice.length === 160) {
+        enqueueMu(slice)
+      } else {
+        const padded = new Uint8Array(160).fill(0xff)
+        padded.set(slice, 0)
+        enqueueMu(padded)
+      }
+    }
+  }
+
+  function incrementSessionCharacters(count) {
+    if (!count) return
+    const stat = sessionStats.get(streamSid)
+    if (!stat) return
+    stat.characterCount = (stat.characterCount || 0) + count
+  }
 
   let oaiOutputIsUlaw = false
 
@@ -535,18 +728,26 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           }
           if (msg?.type === 'response.audio_transcript.delta') {
             const d = (msg.delta || '').toString()
-            curTranscript += d
-          }
-          if (msg?.type === 'response.text.delta') {
-            const d = (msg.delta || '').toString()
-            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.sendText) {
-              if (d) {
-                curHasAudio = true
+            console.log('[oai.transcript.delta]', { delta: d, provider: audioStrategy.provider, hasSendText: !!audioStrategy.sendText })
+            if (d) {
+              curTranscript += d
+              if (audioStrategy.provider === 'elevenlabs' && audioStrategy.sendText) {
                 audioStrategy.sendText(d)
               }
             }
           }
+          if (msg?.type === 'response.text.delta') {
+            const d = (msg.delta || '').toString()
+            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.sendText && d) {
+              audioStrategy.sendText(d)
+            }
+          }
           if (msg?.type === 'response.text.done') {
+            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
+              audioStrategy.flush()
+            }
+          }
+          if (msg?.type === 'response.audio_transcript.done') {
             if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
               audioStrategy.flush()
             }
@@ -562,52 +763,58 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           }
           if (msg?.type === 'response.done') {
             // Fallback if no audio deltas arrived: synthesize transcript
-            if (!curHasAudio && curTranscript.trim() && OAI_KEY) {
-              try {
-                const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
-                  method: 'POST',
-                  headers: { Authorization: `Bearer ${OAI_KEY}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: normalizeVoiceId(selectedVoice) || 'sage', input: curTranscript, format: 'wav' })
-                })
-                if (ttsRes.ok) {
-                  const buf = await ttsRes.arrayBuffer()
-                  const meta = parseWavHeader(buf)
-                  let sampleRate = 0
-                  let dataOffset = 44
-                  if (meta) { sampleRate = meta.sampleRate; dataOffset = meta.dataOffset }
-                  else {
-                    // Fallback: assume standard 44-byte header with little-endian fields
-                    try { sampleRate = new DataView(buf).getUint32(24, true) } catch (_) { sampleRate = 0 }
-                  }
-                  const bytes = new Uint8Array(buf, dataOffset)
-                  const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2))
-                  let pcm8k
-                  if (sampleRate === 8000) {
-                    pcm8k = pcm16
-                  } else {
-                    try {
-                      // Support common 16k/24k → 8k paths with selected resampler
-                      if (!connectOpenAIRealtime._resamplers) connectOpenAIRealtime._resamplers = createResamplerCache()
-                      if (sampleRate % 8000 === 0 && (sampleRate === 16000 || sampleRate === 24000)) {
-                        const rs = connectOpenAIRealtime._resamplers.get(sampleRate, 8000)
-                        if (rs) pcm8k = rs.processInt16(pcm16)
-                      }
-                    } catch (e) {
-                      console.warn('[tts.resample.error]', e?.message)
+            // BUT: Skip this check if using ElevenLabs - we expect no OpenAI audio!
+            if (!curHasAudio && curTranscript.trim() && audioStrategy.provider !== 'elevenlabs') {
+              const transcriptText = curTranscript.trim()
+              let rendered = false
+              if (!rendered && OAI_KEY) {
+                try {
+                  const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${OAI_KEY}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: 'gpt-4o-mini-tts', voice: normalizeVoiceId(selectedVoice) || 'sage', input: transcriptText, format: 'wav' })
+                  })
+                  if (ttsRes.ok) {
+                    const buf = await ttsRes.arrayBuffer()
+                    const meta = parseWavHeader(buf)
+                    let sampleRate = 0
+                    let dataOffset = 44
+                    if (meta) { sampleRate = meta.sampleRate; dataOffset = meta.dataOffset }
+                    else {
+                      // Fallback: assume standard 44-byte header with little-endian fields
+                      try { sampleRate = new DataView(buf).getUint32(24, true) } catch (_) { sampleRate = 0 }
                     }
-                    if (!pcm8k) {
-                      // Last-resort fallback to simple decimation for 16k only (reduced quality)
-                      if (sampleRate === 16000) pcm8k = downsample16kTo8k(pcm16)
-                      else if (sampleRate === 24000) pcm8k = downsample24kTo8kLinear(pcm16)
-                      else {
-                        console.warn('[tts.sample_rate] unsupported sampleRate=', sampleRate, 'using passthrough (may sound wrong)')
-                        pcm8k = pcm16
+                    const bytes = new Uint8Array(buf, dataOffset)
+                    const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2))
+                    let pcm8k
+                    if (sampleRate === 8000) {
+                      pcm8k = pcm16
+                    } else {
+                      try {
+                        // Support common 16k/24k → 8k paths with selected resampler
+                        if (!connectOpenAIRealtime._resamplers) connectOpenAIRealtime._resamplers = createResamplerCache()
+                        if (sampleRate % 8000 === 0 && (sampleRate === 16000 || sampleRate === 24000)) {
+                          const rs = connectOpenAIRealtime._resamplers.get(sampleRate, 8000)
+                          if (rs) pcm8k = rs.processInt16(pcm16)
+                        }
+                      } catch (e) {
+                        console.warn('[tts.resample.error]', e?.message)
+                      }
+                      if (!pcm8k) {
+                        // Last-resort fallback to simple decimation for 16k only (reduced quality)
+                        if (sampleRate === 16000) pcm8k = downsample16kTo8k(pcm16)
+                        else if (sampleRate === 24000) pcm8k = downsample24kTo8kLinear(pcm16)
+                        else {
+                          console.warn('[tts.sample_rate] unsupported sampleRate=', sampleRate, 'using passthrough (may sound wrong)')
+                          pcm8k = pcm16
+                        }
                       }
                     }
+                    for (let i = 0; i < pcm8k.length; i += 160) enqueueMu(encodePcm16ToMuLaw(pcm8k.subarray(i, i + 160)))
+                    curHasAudio = true
                   }
-                  for (let i = 0; i < pcm8k.length; i += 160) enqueueMu(encodePcm16ToMuLaw(pcm8k.subarray(i, i + 160)))
-                }
-              } catch (_) { /* ignore */ }
+                } catch (_) { /* ignore */ }
+              }
             }
             if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
               audioStrategy.flush()
@@ -680,8 +887,7 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
         let elevenlabsVoiceId = null
         let elevenlabsVoiceSettings = null
         let voiceFallbackEnabled = true
-        synthesisStrategy = null
-        let usingElevenLabs = false
+        usingElevenLabs = false
         if (orgId) {
           let agent
           if (agentId && agentId !== 'default') {
@@ -738,186 +944,231 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           prompt: preview(agentPrompt)
         })
 
-        const audioStrategy = {
+        let elevenLabsPending = ''
+        const audioControls = {
           provider: 'openai',
           emitMuLawBase64: (payload) => sendTwilioAudioB64(ws, streamSid, payload),
           sendText: undefined,
-          flush: undefined,
+          flush: () => {},
         }
+        const setAudioControlsOpenAI = () => {
+          elevenLabsPending = ''
+          audioControls.provider = 'openai'
+          audioControls.emitMuLawBase64 = (payload) => sendTwilioAudioB64(ws, streamSid, payload)
+          audioControls.sendText = undefined
+          audioControls.flush = () => {}
+        }
+        setAudioControlsOpenAI()
 
         const attemptElevenLabs =
           agentVoiceProvider === 'elevenlabs' &&
           !!process.env.ELEVENLABS_API_KEY &&
           !!elevenlabsVoiceId
 
-        if (attemptElevenLabs) {
-          const MAX_ELEVENLABS_RETRIES = Number(process.env.ELEVENLABS_MAX_RETRIES || '1')
-          let attempts = 0
-          const createElevenLabsStrategy = async (strategy) => {
-            attempts += 1
-            const statAttempt = sessionStats.get(streamSid)
-            if (statAttempt) {
-              statAttempt.retries = Math.max(0, attempts - 1)
-            }
-            emitMonitor('elevenlabs_stream_attempt', {
-              streamSid,
-              sessionId: statAttempt?.sessionId,
-              organizationId: statAttempt?.organizationId || undefined,
-              agentId: statAttempt?.agentId || undefined,
-              callSid: statAttempt?.callSid || undefined,
-              voiceId: elevenlabsVoiceId,
-              attempt: attempts,
-              maxRetries: MAX_ELEVENLABS_RETRIES,
-            })
-            const elevenlabsClient = new ElevenLabsStream({
-              apiKey: process.env.ELEVENLABS_API_KEY,
-              voiceId: elevenlabsVoiceId,
-              voiceSettings: elevenlabsVoiceSettings || undefined,
-            })
-            await elevenlabsClient.connect(
-              (chunk) => {
-                const payload = Buffer.from(chunk).toString('base64')
-                sendTwilioAudioB64(ws, streamSid, payload)
-              },
-              async (err) => {
-                console.warn('[elevenlabs.stream.error]', err?.message || err)
-                const stat = sessionStats.get(streamSid)
-                emitMonitorError('elevenlabs_stream_error', err, {
-                  streamSid,
-                  sessionId: stat?.sessionId,
-                  organizationId: stat?.organizationId || undefined,
-                  agentId: stat?.agentId || undefined,
-                  callSid: stat?.callSid || undefined,
-                  voiceId: elevenlabsVoiceId,
-                  attempt: attempts,
-                })
-                if (stat) {
-                  stat.provider = 'openai'
-                  stat.voiceId = selectedVoice
-                  stat.fallbacks = (stat.fallbacks || 0) + 1
-                }
-                if (voiceFallbackEnabled) {
-                  usingElevenLabs = false
-                  synthesisStrategy = null
-                  strategy.provider = 'openai'
-                  strategy.sendText = undefined
-                  strategy.flush = undefined
-                  if (attempts <= MAX_ELEVENLABS_RETRIES) {
-                    console.log('[elevenlabs.retry]', { attempt: attempts, streamSid })
-                    emitMonitor('elevenlabs_retry_scheduled', {
-                      streamSid,
-                      sessionId: stat?.sessionId,
-                      attempt: attempts,
-                      maxRetries: MAX_ELEVENLABS_RETRIES,
-                    })
-                    try {
-                      synthesisStrategy = await createElevenLabsStrategy(strategy)
-                      usingElevenLabs = true
-                      strategy.provider = 'elevenlabs'
-                      strategy.sendText = synthesisStrategy.sendText
-                      strategy.flush = synthesisStrategy.flush
-                      return
-                    } catch (retryErr) {
-                      console.warn('[elevenlabs.retry.error]', retryErr?.message || retryErr)
-                      emitMonitorError('elevenlabs_retry_failed', retryErr, {
-                        streamSid,
-                        sessionId: stat?.sessionId,
-                        attempt: attempts,
-                        maxRetries: MAX_ELEVENLABS_RETRIES,
-                      })
-                    }
+        elevenLabsStreamActive = false
+
+        const configureElevenLabsControls = () => {
+          elevenLabsPending = ''
+          audioControls.provider = 'elevenlabs'
+          audioControls.emitMuLawBase64 = () => {}
+          audioControls.sendText = (chunk) => {
+            console.log('[elevenlabs.sendText]', { chunk: chunk?.substring(0, 50), len: chunk?.length })
+            if (!chunk) return
+            elevenLabsPending += chunk
+          }
+          audioControls.flush = async () => {
+            const text = elevenLabsPending.trim()
+            console.log('[elevenlabs.flush]', { text: text?.substring(0, 100), len: text?.length, streamActive: elevenLabsStreamActive, hasStream: !!elevenLabsStream, queueSize: outboundQueue.length })
+            elevenLabsPending = ''
+            if (!text) return
+
+            try {
+              // Create new stream for this utterance if needed
+              if (!elevenLabsStreamActive || !elevenLabsStream) {
+                console.log('[elevenlabs.recreate]', { reason: 'stream not active' })
+                await createElevenLabsStream()
+              }
+
+              elevenLabsStream.sendText(text)
+              // Call flush() to signal we're done with THIS utterance
+              // This will close the stream after sending remaining audio
+              elevenLabsStream.flush()
+              incrementSessionCharacters(text.length)
+              emitMonitor('elevenlabs_stream_text_sent', { streamSid, textLength: text.length })
+
+              // Wait for ElevenLabs to send ALL audio before draining
+              const startWait = Date.now()
+              const initialQueueSize = outboundQueue.length
+
+              // Step 1: Wait for audio to START arriving
+              await new Promise(resolve => {
+                const checkInterval = setInterval(() => {
+                  const elapsed = Date.now() - startWait
+                  if (outboundQueue.length > initialQueueSize + 10) {
+                    clearInterval(checkInterval)
+                    console.log('[elevenlabs.audio.started]', { queueSize: outboundQueue.length, waitedMs: elapsed })
+                    resolve()
                   }
-                  console.log('[elevenlabs.fallback]', { streamSid })
-                  emitMonitor('elevenlabs_fallback_to_openai', {
-                    streamSid,
-                    sessionId: stat?.sessionId,
-                    organizationId: stat?.organizationId || undefined,
-                    agentId: stat?.agentId || undefined,
-                    callSid: stat?.callSid || undefined,
-                    totalFallbacks: stat?.fallbacks ?? 1,
-                  })
-                } else {
-                  emitMonitor('elevenlabs_terminated_no_fallback', {
-                    streamSid,
-                    sessionId: stat?.sessionId,
-                    organizationId: stat?.organizationId || undefined,
-                    agentId: stat?.agentId || undefined,
-                    callSid: stat?.callSid || undefined,
-                  })
-                  try { ws.close(1011, 'ElevenLabs stream error') } catch (_) {}
-                }
-              },
-            )
-            const statActive = sessionStats.get(streamSid)
-            emitMonitor('elevenlabs_stream_connected', {
-              streamSid,
-              sessionId: statActive?.sessionId,
-              organizationId: statActive?.organizationId || undefined,
-              agentId: statActive?.agentId || undefined,
-              callSid: statActive?.callSid || undefined,
-              voiceId: elevenlabsVoiceId,
-              attempt: attempts,
-            })
-            const sendText = (text) => {
-              if (!text) return
-              const statUpdate = sessionStats.get(streamSid)
-              if (statUpdate) {
-                statUpdate.characterCount = (statUpdate.characterCount || 0) + text.length
+                  if (elapsed > 5000) {
+                    clearInterval(checkInterval)
+                    console.log('[elevenlabs.audio.timeout]', { queueSize: outboundQueue.length })
+                    resolve()
+                  }
+                }, 50)
+              })
+
+              // Step 2: Wait for audio to STOP arriving (queue stabilizes)
+              await new Promise(resolve => {
+                let lastQueueSize = outboundQueue.length
+                let stableCount = 0
+                const checkInterval = setInterval(() => {
+                  const currentSize = outboundQueue.length
+                  const elapsed = Date.now() - startWait
+
+                  // If queue size hasn't changed significantly, it's stable
+                  if (Math.abs(currentSize - lastQueueSize) < 5) {
+                    stableCount++
+                    // Stable for 300ms (3 checks * 100ms)
+                    if (stableCount >= 3) {
+                      clearInterval(checkInterval)
+                      console.log('[elevenlabs.audio.complete]', { queueSize: currentSize, waitedMs: elapsed })
+                      resolve()
+                    }
+                  } else {
+                    // Queue still growing, reset counter
+                    stableCount = 0
+                    lastQueueSize = currentSize
+                  }
+
+                  if (elapsed > 10000) {
+                    clearInterval(checkInterval)
+                    console.log('[elevenlabs.stable.timeout]', { queueSize: currentSize })
+                    resolve()
+                  }
+                }, 100)
+              })
+
+              // Step 3: Now wait for queue to drain (leave small buffer for smooth transition)
+              await new Promise(resolve => {
+                const checkInterval = setInterval(() => {
+                  const elapsed = Date.now() - startWait
+                  if (outboundQueue.length < 20) {
+                    clearInterval(checkInterval)
+                    console.log('[elevenlabs.queue.drained]', { queueSize: outboundQueue.length, totalWaitMs: elapsed })
+                    resolve()
+                  }
+                  if (elapsed > 20000) {
+                    clearInterval(checkInterval)
+                    console.log('[elevenlabs.drain.timeout]', { queueSize: outboundQueue.length })
+                    resolve()
+                  }
+                }, 100)
+              })
+
+              // Step 4: Close the stream now that utterance is complete
+              // This allows us to create a fresh stream for the next utterance
+              if (elevenLabsStream) {
+                console.log('[elevenlabs.disconnect]', { reason: 'utterance complete' })
+                await elevenLabsStream.disconnect()
+                elevenLabsStream = null
+                elevenLabsStreamActive = false
               }
-              try {
-                elevenlabsClient.sendText(text)
-              } catch (err) {
-                console.warn('[elevenlabs.sendText.error]', err?.message || err)
-              }
-            }
-            const flush = () => {
-              try {
-                elevenlabsClient.flush()
-              } catch (_) { /* noop */ }
-            }
-            strategy.provider = 'elevenlabs'
-            strategy.sendText = sendText
-            strategy.flush = flush
-            return {
-              provider: 'elevenlabs',
-              sendText,
-              flush,
-              shutdown: async () => {
+            } catch (err) {
+              emitMonitorError('elevenlabs_stream_text_failed', err, { streamSid, textLength: text.length })
+              const stat = sessionStats.get(streamSid)
+              if (stat) stat.fallbacks = (stat.fallbacks || 0) + 1
+              // Clean up failed stream
+              if (elevenLabsStream) {
                 try {
-                  await elevenlabsClient.disconnect()
-                } catch (_) { /* noop */ }
-              },
+                  await elevenLabsStream.disconnect()
+                } catch (_) {}
+                elevenLabsStream = null
+                elevenLabsStreamActive = false
+              }
             }
           }
+        }
+
+        // Helper to create ElevenLabs stream (called per utterance)
+        const createElevenLabsStream = async () => {
           try {
-            synthesisStrategy = await createElevenLabsStrategy(audioStrategy)
+            elevenLabsStream = new ElevenLabsStream({
+              apiKey: process.env.ELEVENLABS_API_KEY,
+              voiceId: elevenlabsVoiceId,
+              modelId: process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5',
+              outputFormat: 'ulaw_8000',
+              voiceSettings: elevenlabsVoiceSettings || undefined,
+            })
+            await elevenLabsStream.connect(
+              (chunk) => {
+                try {
+                  if (chunk && chunk.length) {
+                    const headB64 = Buffer.from(chunk.subarray(0, Math.min(chunk.length, 8))).toString('base64')
+                    // DIAGNOSTIC: Log first few bytes as hex to verify μ-law format
+                    const hexSample = Array.from(chunk.subarray(0, 16))
+                      .map(b => b.toString(16).padStart(2, '0'))
+                      .join(' ')
+                    console.log('[elevenlabs.audio.raw]', {
+                      bytes: chunk.length,
+                      headB64,
+                      hexSample,
+                      isAllFF: chunk.every(b => b === 0xff || b === 0xfe || b === 0x7f),
+                    })
+                    queueMuLawClip(chunk)
+                    curHasAudio = true
+                    emitMonitor('elevenlabs_stream_audio', {
+                      streamSid,
+                      bytes: chunk.length,
+                      headB64,
+                    })
+                  }
+                } catch (err) {
+                  console.warn('[elevenlabs.stream.chunk.error]', err?.message || err)
+                }
+              },
+              (error) => {
+                emitMonitorError('elevenlabs_stream_error', error, {
+                  streamSid,
+                  voiceId: elevenlabsVoiceId,
+                })
+                elevenLabsStreamActive = false
+                usingElevenLabs = false
+                setAudioControlsOpenAI()
+                const stat = sessionStats.get(streamSid)
+                if (stat) stat.fallbacks = (stat.fallbacks || 0) + 1
+                if (stat) stat.provider = 'openai'
+              }
+            )
+            elevenLabsStreamActive = true
+            emitMonitor('elevenlabs_stream_connected', {
+              streamSid,
+              voiceId: elevenlabsVoiceId,
+            })
+          } catch (error) {
+            emitMonitorError('elevenlabs_stream_connect_failed', error, {
+              streamSid,
+              voiceId: elevenlabsVoiceId,
+            })
+            elevenLabsStream = null
+            elevenLabsStreamActive = false
+            throw error
+          }
+        }
+
+        if (attemptElevenLabs) {
+          try {
+            await createElevenLabsStream()
             usingElevenLabs = true
-            console.log('[elevenlabs.active]', { voiceId: elevenlabsVoiceId })
-            const statActive = sessionStats.get(streamSid)
-            if (statActive) {
-              statActive.provider = 'elevenlabs'
-              statActive.voiceId = elevenlabsVoiceId
-            }
-            emitMonitor('elevenlabs_session_active', {
+            configureElevenLabsControls()
+          } catch (error) {
+            emitMonitorError('elevenlabs_stream_connect_failed', error, {
               streamSid,
-              sessionId: statActive?.sessionId,
-              organizationId: statActive?.organizationId || undefined,
-              agentId: statActive?.agentId || undefined,
-              callSid: statActive?.callSid || undefined,
               voiceId: elevenlabsVoiceId,
             })
-          } catch (err) {
-            console.warn('[elevenlabs.init.error]', err?.message || err)
-            const stat = sessionStats.get(streamSid)
-            emitMonitorError('elevenlabs_init_failed', err, {
-              streamSid,
-              sessionId: stat?.sessionId,
-              organizationId: stat?.organizationId || undefined,
-              agentId: stat?.agentId || undefined,
-              callSid: stat?.callSid || undefined,
-              voiceId: elevenlabsVoiceId,
-            })
+            elevenLabsStream = null
+            elevenLabsStreamActive = false
             if (!voiceFallbackEnabled) {
+              const stat = sessionStats.get(streamSid)
               emitMonitor('elevenlabs_terminated_no_fallback', {
                 streamSid,
                 sessionId: stat?.sessionId,
@@ -960,18 +1211,7 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
 
         // Connect OpenAI Realtime and have it manage dialogue
         connectOpenAIRealtime(selectedVoice, greeting, agentLanguage, agentPrompt, {
-          audio: (() => {
-            if (usingElevenLabs && synthesisStrategy) {
-              audioStrategy.provider = 'elevenlabs'
-              audioStrategy.sendText = synthesisStrategy.sendText
-              audioStrategy.flush = synthesisStrategy.flush
-            } else {
-              audioStrategy.provider = 'openai'
-              audioStrategy.sendText = undefined
-              audioStrategy.flush = undefined
-            }
-            return audioStrategy
-          })(),
+          audio: audioControls,
         })
         // Safety timer to avoid blocking if greeting doesn't complete
         setTimeout(() => { if (!greetingDone) { greetingDone = true; console.log('[oai.greeting.timeout]') } }, 12000)
@@ -1004,8 +1244,10 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
     waitingForUser = false
     agentSpeakingNow = false
     greetConsentRequired = false
-    if (synthesisStrategy && typeof synthesisStrategy.shutdown === 'function') {
-      Promise.resolve(synthesisStrategy.shutdown()).catch(() => {})
+    if (elevenLabsStream) {
+      Promise.resolve(elevenLabsStream.disconnect()).catch(() => {})
+      elevenLabsStream = null
+      elevenLabsStreamActive = false
     }
     finalizeSession(streamSid, 'close')
   })
