@@ -403,6 +403,7 @@ wss.on('connection', (ws) => {
   let elevenLabsStream = null
   let elevenLabsStreamActive = false
   let usingElevenLabs = false
+  let elevenLabsTextBuffer = [] // Buffer text chunks while stream reconnects
 
   // Outbound pacing queue (20ms per frame) with light jitter buffer and telemetry
   const outboundQueue = [] /** @type {Uint8Array[]} */
@@ -507,13 +508,16 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
         const v = normalizeVoiceId(voice)
         // Select μ-law passthrough to Twilio like the reference example
         oaiOutputIsUlaw = audioStrategy.provider === 'openai'
+        // Use text-only mode when using ElevenLabs for TTS
+        const useTextOnly = audioStrategy.provider === 'elevenlabs'
         rws.send(JSON.stringify({
           type: 'session.update',
           session: {
             voice: v || 'sage',
-            modalities: ['audio', 'text'],
-            // Output μ-law 8k directly from Realtime for reliable pacing
-            output_audio_format: 'g711_ulaw',
+            // Text-only mode for ElevenLabs, audio+text for OpenAI
+            modalities: useTextOnly ? ['text'] : ['audio', 'text'],
+            // Output μ-law 8k directly from Realtime for reliable pacing (OpenAI mode only)
+            output_audio_format: useTextOnly ? undefined : 'g711_ulaw',
             input_audio_format: 'g711_ulaw',
             // Enable automatic speech turns with a slightly longer silence window
             turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
@@ -736,18 +740,16 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
               }
             }
           }
+          // Handle text deltas in text-only mode (ElevenLabs)
           if (msg?.type === 'response.text.delta') {
             const d = (msg.delta || '').toString()
-            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.sendText && d) {
+            console.log('[oai.text.delta]', { delta: d, provider: audioStrategy.provider, hasSendText: !!audioStrategy.sendText })
+            if (d && audioStrategy.provider === 'elevenlabs' && audioStrategy.sendText) {
               audioStrategy.sendText(d)
             }
           }
+          // Signal end of utterance to ElevenLabs (closes stream, recreates for next turn)
           if (msg?.type === 'response.text.done') {
-            if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
-              audioStrategy.flush()
-            }
-          }
-          if (msg?.type === 'response.audio_transcript.done') {
             if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
               audioStrategy.flush()
             }
@@ -816,6 +818,7 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
                 } catch (_) { /* ignore */ }
               }
             }
+            // Flush on response.done as backup (in case text.done didn't fire)
             if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
               audioStrategy.flush()
             }
@@ -827,9 +830,8 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
       })
       rws.on('close', () => {
         oai.ready = false
-        if (audioStrategy.provider === 'elevenlabs' && audioStrategy.flush) {
-          try { audioStrategy.flush() } catch (_) { /* noop */ }
-        }
+        // NOTE: Don't flush here - OpenAI might reconnect mid-call
+        // Only flush when Twilio call ends (in main ws.on('close'))
         console.log('[oai.close]')
       })
       rws.on('error', (e) => { console.warn('[oai.error]', e?.message) })
@@ -944,7 +946,6 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           prompt: preview(agentPrompt)
         })
 
-        let elevenLabsPending = ''
         const audioControls = {
           provider: 'openai',
           emitMuLawBase64: (payload) => sendTwilioAudioB64(ws, streamSid, payload),
@@ -952,7 +953,6 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           flush: () => {},
         }
         const setAudioControlsOpenAI = () => {
-          elevenLabsPending = ''
           audioControls.provider = 'openai'
           audioControls.emitMuLawBase64 = (payload) => sendTwilioAudioB64(ws, streamSid, payload)
           audioControls.sendText = undefined
@@ -968,128 +968,67 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
         elevenLabsStreamActive = false
 
         const configureElevenLabsControls = () => {
-          elevenLabsPending = ''
           audioControls.provider = 'elevenlabs'
           audioControls.emitMuLawBase64 = () => {}
+
+          // Stream text to ElevenLabs, buffering if stream is reconnecting
           audioControls.sendText = (chunk) => {
-            console.log('[elevenlabs.sendText]', { chunk: chunk?.substring(0, 50), len: chunk?.length })
             if (!chunk) return
-            elevenLabsPending += chunk
-          }
-          audioControls.flush = async () => {
-            const text = elevenLabsPending.trim()
-            console.log('[elevenlabs.flush]', { text: text?.substring(0, 100), len: text?.length, streamActive: elevenLabsStreamActive, hasStream: !!elevenLabsStream, queueSize: outboundQueue.length })
-            elevenLabsPending = ''
-            if (!text) return
 
-            try {
-              // Create new stream for this utterance if needed
-              if (!elevenLabsStreamActive || !elevenLabsStream) {
-                console.log('[elevenlabs.recreate]', { reason: 'stream not active' })
-                await createElevenLabsStream()
-              }
-
-              elevenLabsStream.sendText(text)
-              // Call flush() to signal we're done with THIS utterance
-              // This will close the stream after sending remaining audio
-              elevenLabsStream.flush()
-              incrementSessionCharacters(text.length)
-              emitMonitor('elevenlabs_stream_text_sent', { streamSid, textLength: text.length })
-
-              // Wait for ElevenLabs to send ALL audio before draining
-              const startWait = Date.now()
-              const initialQueueSize = outboundQueue.length
-
-              // Step 1: Wait for audio to START arriving
-              await new Promise(resolve => {
-                const checkInterval = setInterval(() => {
-                  const elapsed = Date.now() - startWait
-                  if (outboundQueue.length > initialQueueSize + 10) {
-                    clearInterval(checkInterval)
-                    console.log('[elevenlabs.audio.started]', { queueSize: outboundQueue.length, waitedMs: elapsed })
-                    resolve()
-                  }
-                  if (elapsed > 5000) {
-                    clearInterval(checkInterval)
-                    console.log('[elevenlabs.audio.timeout]', { queueSize: outboundQueue.length })
-                    resolve()
-                  }
-                }, 50)
+            if (!elevenLabsStreamActive || !elevenLabsStream) {
+              // Buffer text chunks while stream is reconnecting
+              console.log('[elevenlabs.sendText] stream not ready, buffering chunk', {
+                chunk: chunk?.substring(0, 50),
+                len: chunk?.length,
+                bufferSize: elevenLabsTextBuffer.length,
+                streamActive: elevenLabsStreamActive,
+                hasStream: !!elevenLabsStream
               })
-
-              // Step 2: Wait for audio to STOP arriving (queue stabilizes)
-              await new Promise(resolve => {
-                let lastQueueSize = outboundQueue.length
-                let stableCount = 0
-                const checkInterval = setInterval(() => {
-                  const currentSize = outboundQueue.length
-                  const elapsed = Date.now() - startWait
-
-                  // If queue size hasn't changed significantly, it's stable
-                  if (Math.abs(currentSize - lastQueueSize) < 5) {
-                    stableCount++
-                    // Stable for 300ms (3 checks * 100ms)
-                    if (stableCount >= 3) {
-                      clearInterval(checkInterval)
-                      console.log('[elevenlabs.audio.complete]', { queueSize: currentSize, waitedMs: elapsed })
-                      resolve()
-                    }
-                  } else {
-                    // Queue still growing, reset counter
-                    stableCount = 0
-                    lastQueueSize = currentSize
-                  }
-
-                  if (elapsed > 10000) {
-                    clearInterval(checkInterval)
-                    console.log('[elevenlabs.stable.timeout]', { queueSize: currentSize })
-                    resolve()
-                  }
-                }, 100)
-              })
-
-              // Step 3: Now wait for queue to drain (leave small buffer for smooth transition)
-              await new Promise(resolve => {
-                const checkInterval = setInterval(() => {
-                  const elapsed = Date.now() - startWait
-                  if (outboundQueue.length < 20) {
-                    clearInterval(checkInterval)
-                    console.log('[elevenlabs.queue.drained]', { queueSize: outboundQueue.length, totalWaitMs: elapsed })
-                    resolve()
-                  }
-                  if (elapsed > 20000) {
-                    clearInterval(checkInterval)
-                    console.log('[elevenlabs.drain.timeout]', { queueSize: outboundQueue.length })
-                    resolve()
-                  }
-                }, 100)
-              })
-
-              // Step 4: Close the stream now that utterance is complete
-              // This allows us to create a fresh stream for the next utterance
-              if (elevenLabsStream) {
-                console.log('[elevenlabs.disconnect]', { reason: 'utterance complete' })
-                await elevenLabsStream.disconnect()
-                elevenLabsStream = null
-                elevenLabsStreamActive = false
-              }
-            } catch (err) {
-              emitMonitorError('elevenlabs_stream_text_failed', err, { streamSid, textLength: text.length })
-              const stat = sessionStats.get(streamSid)
-              if (stat) stat.fallbacks = (stat.fallbacks || 0) + 1
-              // Clean up failed stream
-              if (elevenLabsStream) {
-                try {
-                  await elevenLabsStream.disconnect()
-                } catch (_) {}
-                elevenLabsStream = null
-                elevenLabsStreamActive = false
-              }
+              elevenLabsTextBuffer.push(chunk)
+              return
             }
+
+            console.log('[elevenlabs.sendText]', { chunk: chunk?.substring(0, 50), len: chunk?.length })
+
+            // Send text chunk immediately to open WebSocket
+            elevenLabsStream.sendText(chunk)
+            incrementSessionCharacters(chunk.length)
+          }
+
+          // Flush signals end of utterance and recreates stream for next turn
+          audioControls.flush = () => {
+            if (!elevenLabsStream) return
+
+            console.log('[elevenlabs.flush] finishing utterance, will recreate stream')
+
+            // Signal end of this utterance (will close stream after audio completes)
+            try {
+              elevenLabsStream.flush()
+            } catch (e) {
+              console.warn('[elevenlabs.flush.error]', e?.message)
+            }
+
+            // Immediately recreate connection for next utterance (non-blocking)
+            // Old stream continues sending audio while new one initializes
+            elevenLabsStream = null
+            elevenLabsStreamActive = false
+
+            createElevenLabsStream()
+              .then(() => {
+                console.log('[elevenlabs.recreate.success] ready for next utterance')
+              })
+              .catch((err) => {
+                console.warn('[elevenlabs.recreate.error]', err?.message)
+                // Fall back to OpenAI on error
+                const stat = sessionStats.get(streamSid)
+                if (stat) stat.fallbacks = (stat.fallbacks || 0) + 1
+                usingElevenLabs = false
+                setAudioControlsOpenAI()
+              })
           }
         }
 
-        // Helper to create ElevenLabs stream (called per utterance)
+        // Helper to create ElevenLabs stream (recreated per utterance for complete audio)
         const createElevenLabsStream = async () => {
           try {
             elevenLabsStream = new ElevenLabsStream({
@@ -1132,6 +1071,7 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
                   voiceId: elevenlabsVoiceId,
                 })
                 elevenLabsStreamActive = false
+                elevenLabsTextBuffer = [] // Clear buffer on error
                 usingElevenLabs = false
                 setAudioControlsOpenAI()
                 const stat = sessionStats.get(streamSid)
@@ -1144,6 +1084,21 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
               streamSid,
               voiceId: elevenlabsVoiceId,
             })
+
+            // Flush buffered text chunks now that stream is ready
+            if (elevenLabsTextBuffer.length > 0) {
+              console.log('[elevenlabs.flush_buffer] sending', elevenLabsTextBuffer.length, 'buffered chunks')
+              const buffered = elevenLabsTextBuffer.slice() // Copy array
+              elevenLabsTextBuffer = [] // Clear buffer
+              for (const chunk of buffered) {
+                try {
+                  elevenLabsStream.sendText(chunk)
+                  incrementSessionCharacters(chunk.length)
+                } catch (err) {
+                  console.warn('[elevenlabs.flush_buffer.error]', err?.message)
+                }
+              }
+            }
           } catch (error) {
             emitMonitorError('elevenlabs_stream_connect_failed', error, {
               streamSid,
@@ -1151,6 +1106,7 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
             })
             elevenLabsStream = null
             elevenLabsStreamActive = false
+            elevenLabsTextBuffer = [] // Clear buffer on error
             throw error
           }
         }
@@ -1245,9 +1201,16 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
     agentSpeakingNow = false
     greetConsentRequired = false
     if (elevenLabsStream) {
-      Promise.resolve(elevenLabsStream.disconnect()).catch(() => {})
+      // Stream already flushed after last response, just disconnect
+      const streamToClose = elevenLabsStream
       elevenLabsStream = null
       elevenLabsStreamActive = false
+
+      // Give any remaining audio a moment to finish playing, then disconnect
+      setTimeout(() => {
+        Promise.resolve(streamToClose.disconnect()).catch(() => {})
+        console.log('[elevenlabs.final.disconnect] call ended')
+      }, 500)
     }
     finalizeSession(streamSid, 'close')
   })
