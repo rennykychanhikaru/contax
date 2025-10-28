@@ -404,6 +404,7 @@ wss.on('connection', (ws) => {
   let elevenLabsStreamActive = false
   let usingElevenLabs = false
   let elevenLabsTextBuffer = [] // Buffer text chunks while stream reconnects
+  let elevenLabsStreamRecreating = false // Prevent double recreation
 
   // Outbound pacing queue (20ms per frame) with light jitter buffer and telemetry
   const outboundQueue = [] /** @type {Uint8Array[]} */
@@ -519,8 +520,8 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
             // Output μ-law 8k directly from Realtime for reliable pacing (OpenAI mode only)
             output_audio_format: useTextOnly ? undefined : 'g711_ulaw',
             input_audio_format: 'g711_ulaw',
-            // Enable automatic speech turns with a slightly longer silence window
-            turn_detection: { type: 'server_vad', silence_duration_ms: 1000 },
+            // Enable automatic speech turns with quick response time
+            turn_detection: { type: 'server_vad', silence_duration_ms: 600 },
             tools: [
               {
                 type: 'function',
@@ -998,8 +999,13 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           // Flush signals end of utterance and recreates stream for next turn
           audioControls.flush = () => {
             if (!elevenLabsStream) return
+            if (elevenLabsStreamRecreating) {
+              console.log('[elevenlabs.flush] already recreating, skipping duplicate flush')
+              return
+            }
 
             console.log('[elevenlabs.flush] finishing utterance, will recreate stream')
+            elevenLabsStreamRecreating = true
 
             // Signal end of this utterance (will close stream after audio completes)
             try {
@@ -1015,9 +1021,11 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
 
             createElevenLabsStream()
               .then(() => {
+                elevenLabsStreamRecreating = false
                 console.log('[elevenlabs.recreate.success] ready for next utterance')
               })
               .catch((err) => {
+                elevenLabsStreamRecreating = false
                 console.warn('[elevenlabs.recreate.error]', err?.message)
                 // Fall back to OpenAI on error
                 const stat = sessionStats.get(streamSid)
