@@ -276,9 +276,17 @@ async function getSupabase() {
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.warn('[warn] Missing Supabase env (NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)')
   }
+  // Diagnostic logging (safe - only shows first/last chars)
+  console.log('[supabase.init]', {
+    url: SUPABASE_URL,
+    keyPrefix: SUPABASE_KEY ? SUPABASE_KEY.substring(0, 20) + '...' : 'MISSING',
+    keySuffix: SUPABASE_KEY ? '...' + SUPABASE_KEY.substring(SUPABASE_KEY.length - 10) : 'MISSING',
+    keyLength: SUPABASE_KEY ? SUPABASE_KEY.length : 0
+  })
   try {
     const mod = await import('@supabase/supabase-js')
     supabase = mod.createClient(SUPABASE_URL, SUPABASE_KEY)
+    console.log('[supabase.created] Client initialized successfully')
   } catch (e) {
     console.error('[fatal] Failed to load @supabase/supabase-js:', e?.message)
   }
