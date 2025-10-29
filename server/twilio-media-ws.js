@@ -896,23 +896,29 @@ function connectOpenAIRealtime(voice, greetingText, languageCode, agentPrompt, o
           if (agentId && agentId !== 'default') {
             const s = await getSupabase()
             if (s) {
-            const { data } = await s
+            const { data, error } = await s
               .from('agent_configurations')
               .select('id, display_name, greeting, language, prompt, voice, voice_provider, elevenlabs_voice_id, elevenlabs_voice_settings, voice_fallback_enabled')
               .eq('organization_id', orgId)
               .eq('id', agentId)
               .single()
+            if (error) {
+              console.error('[agent.query.error]', { agentId, orgId, error: error.message, code: error.code, details: error.details })
+            }
             agent = data
             }
           } else {
             const s = await getSupabase()
             if (s) {
-            const { data } = await s
+            const { data, error } = await s
               .from('agent_configurations')
               .select('id, display_name, greeting, language, prompt, voice, voice_provider, elevenlabs_voice_id, elevenlabs_voice_settings, voice_fallback_enabled')
               .eq('organization_id', orgId)
               .eq('name', 'default')
               .single()
+            if (error) {
+              console.error('[agent.query.default.error]', { orgId, error: error.message, code: error.code, details: error.details })
+            }
             agent = data
             if (agent && agent.id) agentId = agent.id // resolve real agent id for this call
             }
