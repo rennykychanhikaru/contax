@@ -7,18 +7,19 @@ const TARGET_TYPES = new Set(['global', 'account', 'user']);
 
 export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]', async (
   req: NextRequest,
-  { params }: { params: { flagId: string } }
+  { params }: { params: Promise<{ flagId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { flagId } = await params;
   const updates = await req.json().catch(() => null);
 
   if (!updates || typeof updates !== 'object') {
     return respondWithTelemetry(NextResponse.json({ error: 'Invalid body' }, { status: 400 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -38,7 +39,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
       return respondWithTelemetry(NextResponse.json({ error: 'Invalid target_type' }, { status: 400 }), {
         adminUserId: authResult.userId,
         targetType: 'feature_flag',
-        targetId: params.flagId,
+        targetId: flagId,
       });
     }
     allowedUpdates.target_type = updates.target_type;
@@ -48,7 +49,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     return respondWithTelemetry(NextResponse.json({ error: 'No valid fields provided' }, { status: 400 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -59,7 +60,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
   const { data, error } = await admin
     .from('feature_flags')
     .update(allowedUpdates)
-    .eq('id', params.flagId)
+    .eq('id', flagId)
     .select()
     .single();
 
@@ -67,7 +68,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -75,7 +76,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     admin_user_id: authResult.userId,
     action_type: 'FEATURE_FLAG_UPDATED',
     target_type: 'feature_flag',
-    target_id: params.flagId,
+    target_id: flagId,
     metadata: allowedUpdates,
   });
 
@@ -83,7 +84,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     return respondWithTelemetry(NextResponse.json({ error: auditError.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
       metadata: allowedUpdates,
     });
   }
@@ -101,34 +102,35 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     return respondWithTelemetry(NextResponse.json({ error: analyticsError.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
   return respondWithTelemetry(NextResponse.json({ flag: data }), {
     adminUserId: authResult.userId,
     targetType: 'feature_flag',
-    targetId: params.flagId,
+    targetId: flagId,
     metadata: allowedUpdates,
   });
 });
 
 export const DELETE = withAdminTelemetry('DELETE /api/admin/feature-flags/[flagId]', async (
   req: NextRequest,
-  { params }: { params: { flagId: string } }
+  { params }: { params: Promise<{ flagId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { flagId } = await params;
   const admin = getAdminClient();
 
-  const { error } = await admin.from('feature_flags').delete().eq('id', params.flagId);
+  const { error } = await admin.from('feature_flags').delete().eq('id', flagId);
 
   if (error) {
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -136,20 +138,20 @@ export const DELETE = withAdminTelemetry('DELETE /api/admin/feature-flags/[flagI
     admin_user_id: authResult.userId,
     action_type: 'FEATURE_FLAG_DELETED',
     target_type: 'feature_flag',
-    target_id: params.flagId,
+    target_id: flagId,
   });
 
   if (auditError) {
     return respondWithTelemetry(NextResponse.json({ error: auditError.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
   return respondWithTelemetry(NextResponse.json({ success: true }), {
     adminUserId: authResult.userId,
     targetType: 'feature_flag',
-    targetId: params.flagId,
+    targetId: flagId,
   });
 });

@@ -5,11 +5,12 @@ import { respondWithTelemetry, withAdminTelemetry } from '@/lib/monitoring/telem
 
 export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/enable', async (
   req: NextRequest,
-  { params }: { params: { accountId: string } }
+  { params }: { params: Promise<{ accountId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { accountId } = await params;
   const admin = getAdminClient();
 
   const { data, error } = await admin
@@ -20,7 +21,7 @@ export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/ena
       disabled_by: null,
       disabled_reason: null,
     })
-    .eq('id', params.accountId)
+    .eq('id', accountId)
     .select('id')
     .maybeSingle();
 
@@ -28,7 +29,7 @@ export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/ena
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'account',
-      targetId: params.accountId,
+      targetId: accountId,
     });
   }
 
@@ -36,7 +37,7 @@ export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/ena
     return respondWithTelemetry(NextResponse.json({ error: 'Account not found' }, { status: 404 }), {
       adminUserId: authResult.userId,
       targetType: 'account',
-      targetId: params.accountId,
+      targetId: accountId,
     });
   }
 
@@ -44,20 +45,20 @@ export const POST = withAdminTelemetry('POST /api/admin/accounts/[accountId]/ena
     admin_user_id: authResult.userId,
     action_type: 'ACCOUNT_ENABLED',
     target_type: 'account',
-    target_id: params.accountId,
+    target_id: accountId,
   });
 
   if (auditError) {
     return respondWithTelemetry(NextResponse.json({ error: auditError.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'account',
-      targetId: params.accountId,
+      targetId: accountId,
     });
   }
 
   return respondWithTelemetry(NextResponse.json({ success: true }), {
     adminUserId: authResult.userId,
     targetType: 'account',
-    targetId: params.accountId,
+    targetId: accountId,
   });
 });

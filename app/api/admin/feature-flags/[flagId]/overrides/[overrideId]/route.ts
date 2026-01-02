@@ -67,49 +67,50 @@ async function fetchOverride(
 
 export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]/overrides/[overrideId]', async (
   req: NextRequest,
-  { params }: { params: { flagId: string; overrideId: string } }
+  { params }: { params: Promise<{ flagId: string; overrideId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { flagId, overrideId } = await params;
   const payload = await req.json().catch(() => null);
 
   if (!payload || typeof payload !== 'object' || typeof payload.is_enabled !== 'boolean') {
     return respondWithTelemetry(NextResponse.json({ error: 'is_enabled boolean is required' }, { status: 400 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
   const admin = getAdminClient();
 
-  const { data: existing, error: fetchError } = await fetchOverride(admin, params.overrideId);
+  const { data: existing, error: fetchError } = await fetchOverride(admin, overrideId);
 
   if (fetchError) {
     return respondWithTelemetry(NextResponse.json({ error: fetchError.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
-  if (!existing || existing.feature_flag_id !== params.flagId) {
+  if (!existing || existing.feature_flag_id !== flagId) {
     return respondWithTelemetry(NextResponse.json({ error: 'Override not found' }, { status: 404 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
   const { data, error } = await admin
     .from('feature_flag_overrides')
     .update({ is_enabled: payload.is_enabled })
-    .eq('id', params.overrideId)
-    .eq('feature_flag_id', params.flagId)
+    .eq('id', overrideId)
+    .eq('feature_flag_id', flagId)
     .select('id, feature_flag_id, account_id, user_id, is_enabled, created_at, updated_at, accounts(name)')
     .single();
 
@@ -117,8 +118,8 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
@@ -126,7 +127,7 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
     admin_user_id: authResult.userId,
     action_type: 'FEATURE_FLAG_OVERRIDE_UPDATED',
     target_type: 'feature_flag',
-    target_id: params.flagId,
+    target_id: flagId,
     metadata: {
       override_id: data.id,
       is_enabled: data.is_enabled,
@@ -138,52 +139,53 @@ export const PATCH = withAdminTelemetry('PATCH /api/admin/feature-flags/[flagId]
   return respondWithTelemetry(NextResponse.json({ override }), {
     adminUserId: authResult.userId,
     targetType: 'feature_flag',
-    targetId: params.flagId,
-    metadata: { overrideId: params.overrideId, is_enabled: payload.is_enabled },
+    targetId: flagId,
+    metadata: { overrideId, is_enabled: payload.is_enabled },
   });
 });
 
 export const DELETE = withAdminTelemetry('DELETE /api/admin/feature-flags/[flagId]/overrides/[overrideId]', async (
   req: NextRequest,
-  { params }: { params: { flagId: string; overrideId: string } }
+  { params }: { params: Promise<{ flagId: string; overrideId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { flagId, overrideId } = await params;
   const admin = getAdminClient();
 
-  const { data: existing, error: fetchError } = await fetchOverride(admin, params.overrideId);
+  const { data: existing, error: fetchError } = await fetchOverride(admin, overrideId);
 
   if (fetchError) {
     return respondWithTelemetry(NextResponse.json({ error: fetchError.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
-  if (!existing || existing.feature_flag_id !== params.flagId) {
+  if (!existing || existing.feature_flag_id !== flagId) {
     return respondWithTelemetry(NextResponse.json({ error: 'Override not found' }, { status: 404 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
   const { error } = await admin
     .from('feature_flag_overrides')
     .delete()
-    .eq('id', params.overrideId)
-    .eq('feature_flag_id', params.flagId);
+    .eq('id', overrideId)
+    .eq('feature_flag_id', flagId);
 
   if (error) {
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
-      metadata: { overrideId: params.overrideId },
+      targetId: flagId,
+      metadata: { overrideId },
     });
   }
 
@@ -191,9 +193,9 @@ export const DELETE = withAdminTelemetry('DELETE /api/admin/feature-flags/[flagI
     admin_user_id: authResult.userId,
     action_type: 'FEATURE_FLAG_OVERRIDE_DELETED',
     target_type: 'feature_flag',
-    target_id: params.flagId,
+    target_id: flagId,
     metadata: {
-      override_id: params.overrideId,
+      override_id: overrideId,
       account_id: existing.account_id,
       user_id: existing.user_id,
     },
@@ -202,7 +204,7 @@ export const DELETE = withAdminTelemetry('DELETE /api/admin/feature-flags/[flagI
   return respondWithTelemetry(NextResponse.json({ success: true }), {
     adminUserId: authResult.userId,
     targetType: 'feature_flag',
-    targetId: params.flagId,
-    metadata: { overrideId: params.overrideId, account_id: existing.account_id, user_id: existing.user_id },
+    targetId: flagId,
+    metadata: { overrideId, account_id: existing.account_id, user_id: existing.user_id },
   });
 });

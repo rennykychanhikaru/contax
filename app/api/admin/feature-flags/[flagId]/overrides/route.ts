@@ -50,24 +50,25 @@ async function enrichOverrides(rows: SupabaseOverrideRow[]) {
 
 export const GET = withAdminTelemetry('GET /api/admin/feature-flags/[flagId]/overrides', async (
   req: NextRequest,
-  { params }: { params: { flagId: string } }
+  { params }: { params: Promise<{ flagId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { flagId } = await params;
   const admin = getAdminClient();
 
   const { data, error } = await admin
     .from('feature_flag_overrides')
     .select('id, feature_flag_id, account_id, user_id, is_enabled, created_at, updated_at, accounts(name)')
-    .eq('feature_flag_id', params.flagId)
+    .eq('feature_flag_id', flagId)
     .order('created_at', { ascending: false });
 
   if (error) {
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -76,25 +77,26 @@ export const GET = withAdminTelemetry('GET /api/admin/feature-flags/[flagId]/ove
   return respondWithTelemetry(NextResponse.json({ overrides }), {
     adminUserId: authResult.userId,
     targetType: 'feature_flag',
-    targetId: params.flagId,
+    targetId: flagId,
     metadata: { total: overrides.length },
   });
 });
 
 export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/overrides', async (
   req: NextRequest,
-  { params }: { params: { flagId: string } }
+  { params }: { params: Promise<{ flagId: string }> }
 ) => {
   const authResult = await requireSuperAdmin(req);
   if (authResult instanceof NextResponse) return authResult;
 
+  const { flagId } = await params;
   const payload = await req.json().catch(() => null);
 
   if (!payload || typeof payload !== 'object') {
     return respondWithTelemetry(NextResponse.json({ error: 'Invalid body' }, { status: 400 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -114,7 +116,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
     return respondWithTelemetry(NextResponse.json({ error: 'target_type must be account or user' }, { status: 400 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -124,7 +126,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
       {
         adminUserId: authResult.userId,
         targetType: 'feature_flag',
-        targetId: params.flagId,
+        targetId: flagId,
       }
     );
   }
@@ -140,7 +142,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
         {
           adminUserId: authResult.userId,
           targetType: 'feature_flag',
-          targetId: params.flagId,
+          targetId: flagId,
         }
       );
     }
@@ -154,7 +156,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
         return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
           adminUserId: authResult.userId,
           targetType: 'feature_flag',
-          targetId: params.flagId,
+          targetId: flagId,
           metadata: { stage: 'fetch_user' },
         });
       }
@@ -163,7 +165,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
         return respondWithTelemetry(NextResponse.json({ error: 'User not found for provided email' }, { status: 404 }), {
           adminUserId: authResult.userId,
           targetType: 'feature_flag',
-          targetId: params.flagId,
+          targetId: flagId,
         });
       }
       userId = match.id;
@@ -173,7 +175,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
         {
           adminUserId: authResult.userId,
           targetType: 'feature_flag',
-          targetId: params.flagId,
+          targetId: flagId,
         }
       );
     }
@@ -186,7 +188,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
     .from('feature_flag_overrides')
     .upsert(
       {
-        feature_flag_id: params.flagId,
+        feature_flag_id: flagId,
         account_id: accountId,
         user_id: userId,
         is_enabled,
@@ -200,7 +202,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
     return respondWithTelemetry(NextResponse.json({ error: error.message }, { status: 500 }), {
       adminUserId: authResult.userId,
       targetType: 'feature_flag',
-      targetId: params.flagId,
+      targetId: flagId,
     });
   }
 
@@ -208,7 +210,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
     admin_user_id: authResult.userId,
     action_type: 'FEATURE_FLAG_OVERRIDE_UPSERT',
     target_type: 'feature_flag',
-    target_id: params.flagId,
+    target_id: flagId,
     metadata: {
       override_id: data.id,
       target_type,
@@ -223,7 +225,7 @@ export const POST = withAdminTelemetry('POST /api/admin/feature-flags/[flagId]/o
   return respondWithTelemetry(NextResponse.json({ override: enriched[0] }), {
     adminUserId: authResult.userId,
     targetType: 'feature_flag',
-    targetId: params.flagId,
+    targetId: flagId,
     metadata: {
       account_id: accountId,
       user_id: userId,

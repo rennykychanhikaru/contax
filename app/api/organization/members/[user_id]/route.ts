@@ -10,7 +10,7 @@ const ROLE_VALUES = new Set(['owner', 'admin', 'member']);
 // DELETE: remove member
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { user_id: string } }
+  { params }: { params: Promise<{ user_id: string }> }
 ) {
   const rl = checkRateLimit(req as unknown as Request, RateLimitPresets.standard);
   if (!rl.allowed) return NextResponse.json({ error: rl.error || 'Too many requests' }, { status: 429 });
@@ -56,7 +56,7 @@ export async function PATCH(
   const isAdmin = me.role === 'owner' || me.role === 'admin';
   if (!isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-  const targetUserId = params.user_id;
+  const { user_id: targetUserId } = await params;
   const admin = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -108,7 +108,7 @@ export async function PATCH(
 
 export async function DELETE(
   _req: NextRequest,
-  { params }: { params: { user_id: string } }
+  { params }: { params: Promise<{ user_id: string }> }
 ) {
   const cookieStore = await cookies();
   const supabase = createServerClient(
@@ -146,7 +146,7 @@ export async function DELETE(
   const isAdmin = me.role === 'owner' || me.role === 'admin';
   if (!isAdmin) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
-  const targetUserId = params.user_id;
+  const { user_id: targetUserId } = await params;
   const admin = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!

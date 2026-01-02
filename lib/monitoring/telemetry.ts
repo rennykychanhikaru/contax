@@ -30,6 +30,13 @@ export type HandlerResult =
       telemetry?: HandlerTelemetry;
     };
 
+function getAdminUserIdFromContext(context: unknown): string | undefined {
+  if (!context || typeof context !== 'object') return undefined;
+  if (!('adminUserId' in context)) return undefined;
+  const adminUserId = (context as { adminUserId?: unknown }).adminUserId;
+  return typeof adminUserId === 'string' ? adminUserId : undefined;
+}
+
 async function writeAdminEvent(payload: AdminEventInsert) {
   const admin = getAdminClient();
   const { error } = await admin.from('admin_api_events').insert(payload);
@@ -68,11 +75,11 @@ export async function recordAdminApiEvent(options: AdminTelemetryOptions) {
   });
 }
 
-export function withAdminTelemetry<Context extends { adminUserId?: string }>(
+export function withAdminTelemetry<TContext>(
   label: string,
-  handler: (req: NextRequest, context: Context) => Promise<HandlerResult>
+  handler: (req: NextRequest, context: TContext) => Promise<HandlerResult>
 ) {
-  return async (req: NextRequest, context: Context) => {
+  return async (req: NextRequest, context: TContext) => {
     const start = performance.now();
     let status = 500;
     let handlerTelemetry: HandlerTelemetry | undefined;
@@ -93,7 +100,7 @@ export function withAdminTelemetry<Context extends { adminUserId?: string }>(
         path: label,
         status,
         durationMs: Math.round(end - start),
-        adminUserId: handlerTelemetry?.adminUserId ?? context.adminUserId,
+        adminUserId: handlerTelemetry?.adminUserId ?? getAdminUserIdFromContext(context),
         targetType: handlerTelemetry?.targetType,
         targetId: handlerTelemetry?.targetId,
         metadata: handlerTelemetry?.metadata,
