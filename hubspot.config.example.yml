@@ -1,0 +1,10 @@
+# Example HubSpot CLI config.
+# Copy to `hubspot.config.yml` locally and fill in real values.
+defaultPortal: your-portal
+portals:
+  - name: your-portal
+    portalId: 123456
+    env: prod
+    authType: personalaccesskey
+    auth:
+      personalAccessKey: YOUR_HUBSPOT_PERSONAL_ACCESS_KEY

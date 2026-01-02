@@ -50,3 +50,6 @@ pnpm-lock.yaml
 .env*.local
 apps/**/.env.local
 apps/**/.env.production
+
+# HubSpot CLI config (contains secrets)
+hubspot.config.yml
